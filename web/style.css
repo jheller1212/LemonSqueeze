@@ -1,0 +1,389 @@
+:root {
+  --bg: #f5f6f8;
+  --card-bg: #ffffff;
+  --text: #1a1a2e;
+  --text-muted: #6b7280;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --border: #e5e7eb;
+  --success: #059669;
+  --error: #dc2626;
+  --error-bg: #fef2f2;
+  --radius: 8px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+header h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.subtitle {
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.card h2 {
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+  color: var(--text);
+}
+
+.field {
+  margin-bottom: 1rem;
+}
+
+.field label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+}
+
+.field input[type="text"],
+.field input[type="password"],
+.field input[type="number"],
+.field textarea {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.field input:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.field small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.field-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.field-row > .field {
+  flex: 1;
+  min-width: 200px;
+}
+
+.checkbox-group {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.checkbox input {
+  cursor: pointer;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+/* Collapsible sections */
+.toggle {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.toggle .arrow {
+  font-size: 0.75rem;
+  transition: transform 0.2s;
+}
+
+.toggle.open .arrow {
+  transform: rotate(180deg);
+}
+
+.collapsed {
+  display: none;
+}
+
+/* Keyword editors */
+.keyword-editor {
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+}
+
+.keyword-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.keyword-editor-header input {
+  font-weight: 600;
+  border: 1px solid transparent;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.keyword-editor-header input:focus {
+  border-color: var(--border);
+  outline: none;
+}
+
+.keyword-editor textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.remove-category {
+  background: none;
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+}
+
+/* Buttons */
+.btn {
+  display: inline-block;
+  padding: 0.6rem 1.5rem;
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+}
+
+.btn-primary:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: var(--bg);
+}
+
+.btn-stop {
+  background: var(--error);
+  color: #fff;
+}
+
+.btn-stop:hover {
+  background: #b91c1c;
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+/* Progress */
+.progress-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 0.75rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 3px;
+  transition: width 0.3s;
+  width: 0%;
+}
+
+.progress-fill.indeterminate {
+  width: 30%;
+  animation: indeterminate 1.5s infinite ease-in-out;
+}
+
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+#statusText {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* Results */
+.summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.stat {
+  background: var(--bg);
+  padding: 0.75rem;
+  border-radius: var(--radius);
+}
+
+.stat .value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.stat .label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.preview-section {
+  margin-top: 1rem;
+}
+
+.preview-section summary {
+  cursor: pointer;
+  color: var(--primary);
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+}
+
+.preview {
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: 0.85rem;
+}
+
+.preview-post {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.preview-post h3 {
+  font-size: 0.95rem;
+  margin-bottom: 0.25rem;
+}
+
+.preview-post .meta {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.preview-post .categories {
+  margin-top: 0.25rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--primary);
+  margin-right: 0.25rem;
+}
+
+/* Error */
+.error-card {
+  background: var(--error-bg);
+  border-color: var(--error);
+}
+
+.error-card h2 {
+  color: var(--error);
+}
+
+.hidden {
+  display: none;
+}
+
+footer {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-top: 2rem;
+}
+
+@media (max-width: 600px) {
+  .container { padding: 1rem 0.5rem; }
+  .field-row { flex-direction: column; }
+}

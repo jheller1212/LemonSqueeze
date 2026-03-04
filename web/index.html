@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reddit Research Scraper</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Reddit Research Scraper</h1>
+      <p class="subtitle">Collect and analyze Reddit posts for academic research</p>
+    </header>
+
+    <main>
+      <!-- Scrape Configuration -->
+      <section class="card">
+        <h2>1. Subreddit</h2>
+        <div class="field">
+          <label for="subreddit">Subreddit URL or name</label>
+          <input type="text" id="subreddit" placeholder="e.g. MyBoyfriendIsAI or https://www.reddit.com/r/replika/" />
+          <small>Paste a full Reddit URL or just the subreddit name</small>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>2. Scrape Settings</h2>
+        <div class="field-row">
+          <div class="field">
+            <label>Sort modes</label>
+            <div class="checkbox-group">
+              <label class="checkbox"><input type="checkbox" value="new" checked /> New</label>
+              <label class="checkbox"><input type="checkbox" value="top" checked /> Top (all time)</label>
+              <label class="checkbox"><input type="checkbox" value="hot" checked /> Hot</label>
+            </div>
+          </div>
+          <div class="field">
+            <label for="limit">Posts per sort mode</label>
+            <input type="number" id="limit" value="50" min="1" max="10000" />
+            <small>No hard limit — scrapes in batches. Larger numbers take longer.</small>
+          </div>
+        </div>
+        <div class="field-row">
+          <label class="checkbox">
+            <input type="checkbox" id="includeComments" checked /> Include comments
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="skipAnalysis" /> Skip keyword analysis
+          </label>
+        </div>
+      </section>
+
+      <section class="card collapsible">
+        <h2 class="toggle" data-target="keywords-section">
+          3. Keyword Categories
+          <span class="arrow">&#9660;</span>
+        </h2>
+        <div id="keywords-section" class="collapsed">
+          <p class="hint">Edit the keyword categories used for relevance scoring. One keyword per line.</p>
+          <div id="keyword-editors"></div>
+          <button class="btn btn-secondary" id="addCategoryBtn">+ Add Category</button>
+        </div>
+      </section>
+
+      <section class="card collapsible">
+        <h2 class="toggle" data-target="credentials-section">
+          4. Reddit API Credentials (Optional)
+          <span class="arrow">&#9660;</span>
+        </h2>
+        <div id="credentials-section" class="collapsed">
+          <p class="hint">
+            Leave blank to use the pre-configured server credentials.
+            To use your own, create a Reddit app at
+            <a href="https://www.reddit.com/prefs/apps" target="_blank">reddit.com/prefs/apps</a>
+            (choose "script" type).
+          </p>
+          <div class="field-row">
+            <div class="field">
+              <label for="clientId">Client ID</label>
+              <input type="text" id="clientId" placeholder="Your Reddit app client ID" />
+            </div>
+            <div class="field">
+              <label for="clientSecret">Client Secret</label>
+              <input type="password" id="clientSecret" placeholder="Your Reddit app client secret" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="scrapeBtn">Scrape Subreddit</button>
+        <button class="btn btn-stop hidden" id="stopBtn">Stop Scraping</button>
+      </div>
+
+      <!-- Progress -->
+      <section id="progress" class="card hidden">
+        <h2>Progress</h2>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <p id="statusText">Starting...</p>
+      </section>
+
+      <!-- Results -->
+      <section id="results" class="card hidden">
+        <h2>Results</h2>
+        <div id="summary" class="summary"></div>
+        <div class="actions">
+          <button class="btn btn-secondary" id="downloadJson">Download Full JSON</button>
+          <button class="btn btn-secondary" id="downloadPostsCsv">Download Posts CSV</button>
+          <button class="btn btn-secondary" id="downloadCommentsCsv">Download Comments CSV</button>
+        </div>
+        <details class="preview-section">
+          <summary>Preview data (first 5 posts)</summary>
+          <div id="preview" class="preview"></div>
+        </details>
+      </section>
+
+      <!-- Error -->
+      <section id="error" class="card error-card hidden">
+        <h2>Error</h2>
+        <p id="errorText"></p>
+      </section>
+    </main>
+
+    <footer>
+      <p>Built for academic research. Please respect Reddit's API terms of service and rate limits.</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
