@@ -2,8 +2,5 @@
   "name": "reddit-ai-relationships-scraper",
   "version": "1.0.0",
   "description": "Web-based Reddit scraper for AI relationship research",
-  "private": true,
-  "dependencies": {
-    "node-fetch": "^3.3.2"
-  }
+  "private": true
 }

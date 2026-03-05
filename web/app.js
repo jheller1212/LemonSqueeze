@@ -202,8 +202,6 @@ scrapeBtn.addEventListener("click", async () => {
   const limit = parseInt(document.getElementById("limit").value, 10) || 50;
   const includeComments = document.getElementById("includeComments").checked;
   const skipAnalysis = document.getElementById("skipAnalysis").checked;
-  const clientId = document.getElementById("clientId").value.trim() || null;
-  const clientSecret = document.getElementById("clientSecret").value.trim() || null;
   const customKeywords = getCustomKeywords();
   const categories =
     Object.keys(customKeywords).length > 0 ? customKeywords : DEFAULT_KEYWORDS;
@@ -221,18 +219,10 @@ scrapeBtn.addEventListener("click", async () => {
   stopBtn.classList.remove("hidden");
   progressFill.className = "progress-fill";
   progressFill.style.width = "0%";
-  updateProgress("Authenticating with Reddit...");
+  updateProgress("Starting scrape...");
 
   try {
-    // Step 1: Get auth token
-    const authResp = await apiCall({
-      action: "auth",
-      clientId,
-      clientSecret,
-    });
-    const token = authResp.token;
-
-    // Step 2: Batch-scrape each sort mode
+    // Batch-scrape each sort mode
     const allPosts = [];
     const seenIds = new Set();
 
@@ -257,8 +247,6 @@ scrapeBtn.addEventListener("click", async () => {
         );
 
         const batchResp = await apiCall({
-          action: "batch",
-          token,
           subreddit,
           sort: mode,
           batchSize: Math.min(batchSize, limit - modeFetched),

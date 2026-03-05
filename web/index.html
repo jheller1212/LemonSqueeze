@@ -63,31 +63,6 @@
         </div>
       </section>
 
-      <section class="card collapsible">
-        <h2 class="toggle" data-target="credentials-section">
-          4. Reddit API Credentials (Optional)
-          <span class="arrow">&#9660;</span>
-        </h2>
-        <div id="credentials-section" class="collapsed">
-          <p class="hint">
-            Leave blank to use the pre-configured server credentials.
-            To use your own, create a Reddit app at
-            <a href="https://www.reddit.com/prefs/apps" target="_blank">reddit.com/prefs/apps</a>
-            (choose "script" type).
-          </p>
-          <div class="field-row">
-            <div class="field">
-              <label for="clientId">Client ID</label>
-              <input type="text" id="clientId" placeholder="Your Reddit app client ID" />
-            </div>
-            <div class="field">
-              <label for="clientSecret">Client Secret</label>
-              <input type="password" id="clientSecret" placeholder="Your Reddit app client secret" />
-            </div>
-          </div>
-        </div>
-      </section>
-
       <div class="actions">
         <button class="btn btn-primary" id="scrapeBtn">Scrape Subreddit</button>
         <button class="btn btn-stop hidden" id="stopBtn">Stop Scraping</button>
