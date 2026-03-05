@@ -1,14 +1,20 @@
 // Reddit scraper serverless function for Netlify
 // Uses public JSON endpoints — no API credentials required
 
-const USER_AGENT = "MyBoyfriendIsAI-Scraper/1.0 (research; no auth)";
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const BASE_URL = "https://www.reddit.com";
 
 async function fetchWithRetry(url, options = {}, retries = 3) {
   for (let attempt = 0; attempt < retries; attempt++) {
     const resp = await fetch(url, {
       ...options,
-      headers: { "User-Agent": USER_AGENT, ...options.headers },
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "application/json, text/html;q=0.9, */*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        ...options.headers,
+      },
     });
 
     if (resp.status === 429) {

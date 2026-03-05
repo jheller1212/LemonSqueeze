@@ -1,3 +1,19 @@
+// Theme toggle
+(function initTheme() {
+  const saved = localStorage.getItem("theme");
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+  document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("themeToggle");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme");
+      const next = current === "light" ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("theme", next);
+    });
+  });
+})();
+
 // Default keyword categories (optional — only used when keyword analysis is enabled)
 const DEFAULT_KEYWORDS = {
   hiding_secrecy: [
