@@ -1,14 +1,7 @@
 // Reddit scraper serverless function for Netlify
-// Supports both public JSON endpoints and OAuth API
+// Uses Reddit OAuth API (required — public endpoints are blocked from server IPs)
 
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-
-// Try multiple base URLs — old.reddit.com is less aggressively blocked
-const BASE_URLS = [
-  "https://old.reddit.com",
-  "https://www.reddit.com",
-];
+const APP_USER_AGENT = "LemonSqueeze/1.0 (research scraper)";
 
 // OAuth state (cached across invocations in the same Lambda container)
 let oauthToken = null;
@@ -17,141 +10,106 @@ let oauthExpiry = 0;
 async function getOAuthToken() {
   const clientId = process.env.REDDIT_CLIENT_ID;
   const clientSecret = process.env.REDDIT_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return null;
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "Reddit API credentials are not configured. " +
+      "The site owner needs to set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET " +
+      "in the Netlify dashboard (Site Settings → Environment Variables). " +
+      "Get free credentials at https://www.reddit.com/prefs/apps — create a 'script' type app."
+    );
+  }
 
   // Reuse token if still valid
   if (oauthToken && Date.now() < oauthExpiry) return oauthToken;
 
-  try {
-    const resp = await fetch("https://www.reddit.com/api/v1/access_token", {
-      method: "POST",
-      headers: {
-        "Authorization": "Basic " + btoa(`${clientId}:${clientSecret}`),
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "LemonSqueeze/1.0",
-      },
-      body: "grant_type=client_credentials",
-    });
-
-    if (!resp.ok) return null;
-
-    const data = await resp.json();
-    oauthToken = data.access_token;
-    // Expire 60s early to be safe
-    oauthExpiry = Date.now() + (data.expires_in - 60) * 1000;
-    return oauthToken;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchWithOAuth(url, token) {
-  // OAuth requests go to oauth.reddit.com
-  const oauthUrl = url.replace(/https:\/\/(old|www)\.reddit\.com/, "https://oauth.reddit.com");
-  const resp = await fetch(oauthUrl, {
+  const resp = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
     headers: {
-      "Authorization": `Bearer ${token}`,
-      "User-Agent": "LemonSqueeze/1.0",
+      "Authorization": "Basic " + btoa(`${clientId}:${clientSecret}`),
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": APP_USER_AGENT,
     },
+    body: "grant_type=client_credentials",
   });
 
   if (!resp.ok) {
-    throw new Error(`OAuth request failed (${resp.status})`);
+    const text = await resp.text().catch(() => "");
+    throw new Error(
+      `Failed to authenticate with Reddit API (${resp.status}). ` +
+      "Check that REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are correct."
+    );
   }
-  return resp.json();
+
+  const data = await resp.json();
+  oauthToken = data.access_token;
+  // Expire 60s early to be safe
+  oauthExpiry = Date.now() + (data.expires_in - 60) * 1000;
+  return oauthToken;
 }
 
-const BROWSER_HEADERS = {
-  "User-Agent": USER_AGENT,
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "gzip, deflate, br",
-  "Sec-Fetch-Dest": "document",
-  "Sec-Fetch-Mode": "navigate",
-  "Sec-Fetch-Site": "none",
-  "Sec-Fetch-User": "?1",
-  "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
-  "Sec-Ch-Ua-Mobile": "?0",
-  "Sec-Ch-Ua-Platform": '"Windows"',
-  "Upgrade-Insecure-Requests": "1",
-  "Cache-Control": "max-age=0",
-};
-
-async function fetchWithRetry(url, options = {}, retries = 3) {
-  // Strategy 1: Try OAuth if credentials are configured
+async function fetchReddit(url, retries = 3) {
   const token = await getOAuthToken();
-  if (token) {
-    try {
-      return await fetchWithOAuth(url, token);
-    } catch {
-      // Fall through to public endpoints
+
+  // OAuth requests go to oauth.reddit.com
+  const oauthUrl = url.replace(
+    /https:\/\/(old|www)\.reddit\.com/,
+    "https://oauth.reddit.com"
+  );
+
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const resp = await fetch(oauthUrl, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "User-Agent": APP_USER_AGENT,
+      },
+    });
+
+    if (resp.status === 429) {
+      // Rate limited — wait with exponential backoff
+      const wait = 2 ** (attempt + 1) * 1000;
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
     }
-  }
 
-  // Strategy 2: Try public JSON endpoints with browser-like headers
-  for (const baseUrl of BASE_URLS) {
-    const targetUrl = url.replace(/https:\/\/(old|www)\.reddit\.com/, baseUrl);
-
-    for (let attempt = 0; attempt < retries; attempt++) {
-      try {
-        const resp = await fetch(targetUrl, {
-          ...options,
+    if (resp.status === 401) {
+      // Token expired mid-session — force refresh and retry once
+      oauthToken = null;
+      oauthExpiry = 0;
+      if (attempt === 0) {
+        const newToken = await getOAuthToken();
+        const retryResp = await fetch(oauthUrl, {
           headers: {
-            ...BROWSER_HEADERS,
-            ...options.headers,
+            "Authorization": `Bearer ${newToken}`,
+            "User-Agent": APP_USER_AGENT,
           },
         });
-
-        if (resp.status === 429) {
-          const wait = 2 ** (attempt + 1) * 1000;
-          await new Promise((r) => setTimeout(r, wait));
-          continue;
-        }
-
-        if (resp.status === 403) {
-          // This base URL is blocked, try the next one
-          break;
-        }
-
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`Reddit error (${resp.status}): ${text.slice(0, 200)}`);
-        }
-
-        const text = await resp.text();
-        try {
-          return JSON.parse(text);
-        } catch {
-          // Got HTML instead of JSON (blocked page) — try next base URL
-          break;
-        }
-      } catch (err) {
-        if (err.message.startsWith("Reddit error")) throw err;
-        // Network error, retry
-        if (attempt === retries - 1) break;
-        await new Promise((r) => setTimeout(r, 2 ** (attempt + 1) * 1000));
+        if (retryResp.ok) return retryResp.json();
       }
+      throw new Error("Reddit API authentication failed. Credentials may be invalid.");
     }
+
+    if (!resp.ok) {
+      throw new Error(`Reddit API error (${resp.status})`);
+    }
+
+    return resp.json();
   }
 
-  throw new Error(
-    "Reddit is blocking requests from this server. " +
-    "To fix this, set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET environment variables in Netlify. " +
-    "Get free credentials at reddit.com/prefs/apps (create a 'script' type app)."
-  );
+  throw new Error("Reddit API rate limit exceeded. Please try again in a minute.");
 }
 
 async function fetchListing(subreddit, sort, limit, after = null, timeFilter = "all") {
-  let url = `https://old.reddit.com/r/${subreddit}/${sort}.json?limit=${Math.min(limit, 100)}&raw_json=1`;
+  let url = `https://oauth.reddit.com/r/${subreddit}/${sort}.json?limit=${Math.min(limit, 100)}&raw_json=1`;
   if (sort === "top") url += `&t=${timeFilter}`;
   if (after) url += `&after=${after}`;
-  return fetchWithRetry(url);
+  return fetchReddit(url);
 }
 
 async function fetchComments(subreddit, postId) {
-  const url = `https://old.reddit.com/r/${subreddit}/comments/${postId}.json?raw_json=1&limit=500&depth=10`;
+  const url = `https://oauth.reddit.com/r/${subreddit}/comments/${postId}.json?raw_json=1&limit=500&depth=10`;
   try {
-    const data = await fetchWithRetry(url);
+    const data = await fetchReddit(url);
     if (!data[1] || !data[1].data) return [];
 
     const comments = [];
