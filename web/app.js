@@ -180,16 +180,27 @@ const resultsSection = document.getElementById("results");
 const errorSection = document.getElementById("error");
 const errorText = document.getElementById("errorText");
 
-async function apiCall(body) {
-  const resp = await fetch("/api/scrape", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: abortController?.signal,
-  });
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || `Server error (${resp.status})`);
-  return data;
+async function apiCall(body, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch("/api/scrape", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: abortController?.signal,
+    });
+    const data = await resp.json();
+    if (resp.ok) return data;
+
+    const errMsg = data.error || `Server error (${resp.status})`;
+    // Retry on rate limit or server errors, but not on client errors
+    if (attempt < maxRetries && (resp.status === 429 || resp.status >= 500 || errMsg.includes("rate limit"))) {
+      const wait = 5000 * 2 ** attempt; // 5s, 10s, 20s
+      updateProgress(`Rate limited — retrying in ${wait / 1000}s...`);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+    throw new Error(errMsg);
+  }
 }
 
 function updateProgress(message, percent = null) {
