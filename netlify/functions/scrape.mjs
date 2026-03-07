@@ -3,21 +3,23 @@
 
 const USER_AGENT = "LemonSqueeze/1.0 (research scraper)";
 
-async function fetchPullPush(url, retries = 3) {
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchPullPush(url, retries = 5) {
   for (let attempt = 0; attempt < retries; attempt++) {
     const resp = await fetch(url, {
       headers: { "User-Agent": USER_AGENT },
     });
 
     if (resp.status === 429) {
-      const wait = 2 ** (attempt + 1) * 1000;
-      await new Promise((r) => setTimeout(r, wait));
+      // Longer backoff: 5s, 10s, 20s, 40s, 80s
+      const wait = 5000 * 2 ** attempt;
+      await delay(wait);
       continue;
     }
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
-      // Only include first 200 chars of error body to avoid HTML dumps
       const snippet = text.length > 200 ? text.slice(0, 200) + "…" : text;
       throw new Error(`PullPush API error (${resp.status}): ${snippet}`);
     }
@@ -181,11 +183,13 @@ export async function handler(event) {
       posts.push(post);
     }
 
-    // Fetch comments in parallel batches of 5 to stay within timeout
+    // Fetch comments in parallel batches of 3, with delay between batches
+    // to avoid PullPush rate limits on larger scrapes
     if (includeComments) {
-      const PARALLEL = 5;
+      const PARALLEL = 3;
       const postsWithComments = posts.filter((p) => p.num_comments > 0);
       for (let i = 0; i < postsWithComments.length; i += PARALLEL) {
+        if (i > 0) await delay(1500); // breathing room between batches
         const batch = postsWithComments.slice(i, i + PARALLEL);
         const results = await Promise.all(batch.map((p) => fetchComments(p.id)));
         for (let j = 0; j < batch.length; j++) {
