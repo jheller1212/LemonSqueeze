@@ -55,22 +55,25 @@ const timeFilterBlock = document.getElementById("timeFilterBlock");
 const timeFilterSelect = document.getElementById("timeFilter");
 const timeFilterNote = document.getElementById("timeFilterNote");
 
-function updateTimeFilterState() {
-  const activeSorts = Array.from(document.querySelectorAll("#sortPills .pill.active")).map(
-    (p) => p.dataset.value
-  );
-  const needsTimeFilter = activeSorts.includes("top") || activeSorts.includes("controversial");
+const customDateRange = document.getElementById("customDateRange");
+const dateFromInput = document.getElementById("dateFrom");
+const dateToInput = document.getElementById("dateTo");
 
-  if (needsTimeFilter) {
-    timeFilterSelect.disabled = false;
-    timeFilterBlock.classList.remove("disabled");
-    timeFilterNote.textContent = "";
+function updateTimeFilterState() {
+  // Time range applies to all sorts now (archive-based)
+  timeFilterSelect.disabled = false;
+  timeFilterBlock.classList.remove("disabled");
+  timeFilterNote.textContent = "";
+
+  // Show/hide custom date inputs
+  if (timeFilterSelect.value === "custom") {
+    customDateRange.classList.remove("hidden");
   } else {
-    timeFilterSelect.disabled = true;
-    timeFilterBlock.classList.add("disabled");
-    timeFilterNote.textContent = "Only applies to Top and Controversial sorts";
+    customDateRange.classList.add("hidden");
   }
 }
+
+timeFilterSelect.addEventListener("change", updateTimeFilterState);
 
 sortPills.forEach((pill) => {
   pill.addEventListener("click", () => {
@@ -461,6 +464,7 @@ async function startScrape(isResume) {
 
   let subreddit, sortQueue, limit, includeComments, includeSelftext, skipNSFW;
   let keywordsEnabled, timeFilter, customKeywords, categories;
+  let customAfterEpoch = null, customBeforeEpoch = null;
   let allPosts = [], seenIds = new Set();
   let startSortIdx = 0, startAfter = null, startModeFetched = 0;
 
@@ -479,6 +483,8 @@ async function startScrape(isResume) {
     keywordsEnabled = saved.settings.keywordsEnabled;
     timeFilter = saved.settings.timeFilter;
     customKeywords = saved.settings.customKeywords;
+    customAfterEpoch = saved.settings.customAfterEpoch || null;
+    customBeforeEpoch = saved.settings.customBeforeEpoch || null;
     categories = Object.keys(customKeywords || {}).length > 0 ? customKeywords : DEFAULT_KEYWORDS;
   } else {
     const subredditInput = document.getElementById("subreddit").value.trim();
@@ -496,12 +502,25 @@ async function startScrape(isResume) {
     }
 
     limit = parseInt(document.getElementById("limit").value, 10) || 50;
-    limit = Math.min(limit, 1000); // Hard cap
+    limit = Math.min(limit, 5000); // Hard cap
     includeComments = document.getElementById("includeComments").checked;
     includeSelftext = document.getElementById("includeSelftext").checked;
     skipNSFW = document.getElementById("skipNSFW").checked;
     keywordsEnabled = document.getElementById("enableKeywords").checked;
     timeFilter = document.getElementById("timeFilter").value;
+    if (timeFilter === "custom") {
+      const fromVal = document.getElementById("dateFrom").value;
+      const toVal = document.getElementById("dateTo").value;
+      if (!fromVal) {
+        showError("Please select a start date for your custom range.");
+        return;
+      }
+      // Convert dates to epoch — "from" is start of day, "to" is end of day
+      customAfterEpoch = Math.floor(new Date(fromVal + "T00:00:00Z").getTime() / 1000);
+      customBeforeEpoch = toVal
+        ? Math.floor(new Date(toVal + "T23:59:59Z").getTime() / 1000)
+        : null;
+    }
     customKeywords = keywordsEnabled ? getCustomKeywords() : {};
     categories = Object.keys(customKeywords).length > 0 ? customKeywords : DEFAULT_KEYWORDS;
 
@@ -542,7 +561,7 @@ async function startScrape(isResume) {
   progressFill.style.width = "0%";
   updateProgress(isResume ? `Resuming... (${allPosts.length} posts already collected)` : "Starting squeeze...");
 
-  const settings = { limit, includeComments, includeSelftext, skipNSFW, keywordsEnabled, timeFilter, customKeywords };
+  const settings = { limit, includeComments, includeSelftext, skipNSFW, keywordsEnabled, timeFilter, customKeywords, customAfterEpoch, customBeforeEpoch };
 
   try {
     for (let modeIdx = startSortIdx; modeIdx < sortQueue.length; modeIdx++) {
@@ -561,7 +580,7 @@ async function startScrape(isResume) {
           percent
         );
 
-        const batchResp = await apiCall({
+        const reqBody = {
           subreddit,
           sort: mode.sort,
           batchSize: Math.min(batchSize, limit - modeFetched),
@@ -569,7 +588,10 @@ async function startScrape(isResume) {
           includeComments,
           skipIds: Array.from(seenIds),
           timeFilter: mode.timeFilter,
-        });
+        };
+        if (customAfterEpoch) reqBody.afterEpoch = customAfterEpoch;
+        if (customBeforeEpoch) reqBody.beforeEpoch = customBeforeEpoch;
+        const batchResp = await apiCall(reqBody);
 
         let newPosts = batchResp.posts.filter((p) => !seenIds.has(p.id));
 

@@ -130,24 +130,37 @@
               Posts per sort
               <span class="info-tooltip" data-tooltip="How many posts to collect per sort mode. Reddit caps at ~1,000 per sort. E.g. 100 posts x 2 sorts = up to 200 posts.">?</span>
             </label>
-            <input type="number" id="limit" value="50" min="1" max="1000" class="input-small" title="Number of posts to fetch per sort mode (1-1,000)" />
-            <span class="limit-note">Max ~1,000 per sort mode</span>
+            <input type="number" id="limit" value="50" min="1" max="5000" class="input-small" title="Number of posts to fetch per sort mode (1-5,000)" />
+            <span class="limit-note">Max 5,000 per sort mode (archive-based, no Reddit API limits)</span>
           </div>
 
-          <!-- Time Filter (for Top / Controversial) -->
+          <!-- Time Filter -->
           <div class="option-block" id="timeFilterBlock">
             <label class="option-label">
-              Time filter
-              <span class="info-tooltip" data-tooltip="Only applies to 'Top' and 'Controversial' sorts. Controls the time window. Greyed out when neither is selected.">?</span>
+              Time range
+              <span class="info-tooltip" data-tooltip="Filter posts by date range. Use 'Custom range' to select exact start/end dates — ideal for building month-by-month or yearly datasets.">?</span>
             </label>
             <div class="select-wrapper">
-              <select id="timeFilter" title="Time range for 'Top' and 'Controversial' sorts">
+              <select id="timeFilter" title="Time range for post collection">
                 <option value="all" selected>All time</option>
                 <option value="year">Past year</option>
                 <option value="month">Past month</option>
                 <option value="week">Past week</option>
                 <option value="day">Today</option>
+                <option value="custom">Custom range...</option>
               </select>
+            </div>
+            <div id="customDateRange" class="custom-date-range hidden">
+              <div class="date-inputs">
+                <label>
+                  From
+                  <input type="date" id="dateFrom" title="Start date (inclusive)" />
+                </label>
+                <label>
+                  To
+                  <input type="date" id="dateTo" title="End date (inclusive)" />
+                </label>
+              </div>
             </div>
             <span class="time-filter-note" id="timeFilterNote"></span>
           </div>

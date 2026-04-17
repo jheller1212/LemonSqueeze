@@ -255,7 +255,7 @@ function flattenCommentTree(items, depth = 0) {
 
 // --- Combined fetchers with fallback ---
 
-async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAfterEpoch) {
+async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAfterEpoch, hardBeforeEpoch) {
   const isScoreSort = sort === "top" || sort === "controversial";
   const isHot = sort === "hot";
   const isRising = sort === "rising";
@@ -269,13 +269,15 @@ async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAft
   }
 
   // Parse pagination cursor
-  let beforeUtc = null;
+  let beforeUtc = hardBeforeEpoch || null;
   let maxScore = null;
   if (paginationCursor) {
     if (paginationCursor.startsWith("score:")) {
       maxScore = parseInt(paginationCursor.split(":")[1], 10);
     } else {
-      beforeUtc = parseInt(paginationCursor, 10);
+      const cursorUtc = parseInt(paginationCursor, 10);
+      // Use the earlier of pagination cursor and hard before limit
+      beforeUtc = beforeUtc ? Math.min(beforeUtc, cursorUtc) : cursorUtc;
     }
   }
 
@@ -524,7 +526,11 @@ export async function handler(event) {
 
     const seenIds = new Set(skipIds);
     const effectiveBatch = Math.min(batchSize, 100);
-    const timeAfterEpoch = getTimeFilterEpoch(timeFilter);
+
+    // Custom date range takes priority over preset time filters
+    const afterEpochOverride = body.afterEpoch ? Number(body.afterEpoch) : null;
+    const beforeEpochOverride = body.beforeEpoch ? Number(body.beforeEpoch) : null;
+    const timeAfterEpoch = afterEpochOverride || getTimeFilterEpoch(timeFilter);
 
     const { posts: rawPosts } = await fetchPostsBatch(
       parsedSubreddit,
@@ -532,6 +538,7 @@ export async function handler(event) {
       effectiveBatch,
       after,
       timeAfterEpoch > 0 ? timeAfterEpoch : undefined,
+      beforeEpochOverride || undefined,
     );
 
     if (!rawPosts || rawPosts.length === 0) {
