@@ -312,14 +312,14 @@ body {
 .btn-scrape {
   padding: 0 1.75rem;
   background: linear-gradient(135deg, var(--lemon) 0%, var(--orange) 100%);
-  color: #1a1a00;
+  color: #000;
   border: none;
   border-radius: var(--radius);
   font-family: var(--font);
   font-size: 1.05rem;
   font-weight: 800;
   letter-spacing: 0.04em;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
@@ -1167,10 +1167,12 @@ footer {
 /* Primary download button */
 .btn-download-primary {
   background: linear-gradient(135deg, var(--lemon), var(--orange));
-  color: #1a1a00;
+  color: #000;
   font-size: 0.9rem;
+  font-weight: 700;
   padding: 0.75rem 1.5rem;
   border: none;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
 }
 
 .btn-download-primary:hover {
@@ -1257,7 +1259,8 @@ footer {
   background: linear-gradient(135deg, var(--lemon), var(--orange));
   border: none;
   border-radius: var(--radius-sm);
-  color: #1a1a00;
+  color: #000;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
   font-family: var(--font);
   font-size: 0.82rem;
   font-weight: 700;
