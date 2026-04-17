@@ -278,7 +278,7 @@ async function apiCall(body, maxRetries = 3) {
     const errMsg = data.error || `Server error (${resp.status})`;
     if (attempt < maxRetries && (resp.status === 429 || resp.status >= 500 || errMsg.includes("rate limit"))) {
       const wait = 5000 * 2 ** attempt;
-      updateProgress(`Reddit rate-limited this request. Waiting ${wait / 1000}s and retrying...`);
+      updateProgress(`Data source rate-limited. Waiting ${wait / 1000}s and retrying...`);
       await new Promise((r) => setTimeout(r, wait));
       continue;
     }

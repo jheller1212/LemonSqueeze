@@ -6,3 +6,6 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# Local Netlify folder
+.netlify
