@@ -84,55 +84,6 @@ sortPills.forEach((pill) => {
 
 updateTimeFilterState();
 
-// --- Keyword Editors ---
-const editorsContainer = document.getElementById("keyword-editors");
-
-function createKeywordEditor(name, keywords) {
-  const div = document.createElement("div");
-  div.className = "keyword-editor";
-  div.innerHTML = `
-    <div class="keyword-editor-header">
-      <input type="text" class="category-name" value="${escapeHtml(name)}" />
-      <button class="remove-category" title="Remove category">Remove</button>
-    </div>
-    <textarea class="category-keywords">${keywords.join("\n")}</textarea>
-  `;
-  div.querySelector(".remove-category").addEventListener("click", () => div.remove());
-  editorsContainer.appendChild(div);
-}
-
-document.getElementById("addCategoryBtn").addEventListener("click", () => {
-  createKeywordEditor("new_category", []);
-});
-
-// Pre-populate keyword editors when advanced section is first opened
-const advancedSection = document.querySelector(".advanced-section");
-let keywordsPopulated = false;
-advancedSection.addEventListener("toggle", () => {
-  if (advancedSection.open && !keywordsPopulated) {
-    for (const [name, keywords] of Object.entries(DEFAULT_KEYWORDS)) {
-      createKeywordEditor(name, keywords);
-    }
-    keywordsPopulated = true;
-  }
-});
-
-function getCustomKeywords() {
-  const editors = editorsContainer.querySelectorAll(".keyword-editor");
-  const categories = {};
-  editors.forEach((editor) => {
-    const name = editor.querySelector(".category-name").value.trim();
-    const keywords = editor
-      .querySelector(".category-keywords")
-      .value.split("\n")
-      .map((k) => k.trim())
-      .filter((k) => k.length > 0);
-    if (name && keywords.length > 0) {
-      categories[name] = keywords;
-    }
-  });
-  return categories;
-}
 
 // --- Keyword Analysis (client-side) ---
 function escapeRegex(str) {
@@ -460,7 +411,7 @@ async function startScrape(isResume) {
   const saved = isResume ? loadProgress() : null;
 
   let subreddit, sortQueue, limit, includeComments, includeSelftext, skipNSFW;
-  let keywordsEnabled, timeFilter, customKeywords, categories;
+  let timeFilter;
   let customAfterEpoch = null, customBeforeEpoch = null;
   let allPosts = [], seenIds = new Set();
   let startSortIdx = 0, startAfter = null, startModeFetched = 0;
@@ -477,12 +428,9 @@ async function startScrape(isResume) {
     includeComments = saved.settings.includeComments;
     includeSelftext = saved.settings.includeSelftext;
     skipNSFW = saved.settings.skipNSFW;
-    keywordsEnabled = saved.settings.keywordsEnabled;
     timeFilter = saved.settings.timeFilter;
-    customKeywords = saved.settings.customKeywords;
     customAfterEpoch = saved.settings.customAfterEpoch || null;
     customBeforeEpoch = saved.settings.customBeforeEpoch || null;
-    categories = Object.keys(customKeywords || {}).length > 0 ? customKeywords : DEFAULT_KEYWORDS;
   } else {
     const subredditInput = document.getElementById("subreddit").value.trim();
     if (!subredditInput) {
@@ -503,7 +451,6 @@ async function startScrape(isResume) {
     includeComments = document.getElementById("includeComments").checked;
     includeSelftext = document.getElementById("includeSelftext").checked;
     skipNSFW = document.getElementById("skipNSFW").checked;
-    keywordsEnabled = document.getElementById("enableKeywords").checked;
     timeFilter = document.getElementById("timeFilter").value;
     if (timeFilter === "custom") {
       const fromVal = document.getElementById("dateFrom").value;
@@ -518,9 +465,6 @@ async function startScrape(isResume) {
         ? Math.floor(new Date(toVal + "T23:59:59Z").getTime() / 1000)
         : null;
     }
-    customKeywords = keywordsEnabled ? getCustomKeywords() : {};
-    categories = Object.keys(customKeywords).length > 0 ? customKeywords : DEFAULT_KEYWORDS;
-
     subreddit = subredditInput;
     const urlMatch = subreddit.match(/reddit\.com\/r\/([^/?\s]+)/);
     if (urlMatch) subreddit = urlMatch[1];
@@ -558,7 +502,7 @@ async function startScrape(isResume) {
   progressFill.style.width = "0%";
   updateProgress(isResume ? `Resuming... (${allPosts.length} posts already collected)` : "Starting squeeze...");
 
-  const settings = { limit, includeComments, includeSelftext, skipNSFW, keywordsEnabled, timeFilter, customKeywords, customAfterEpoch, customBeforeEpoch };
+  const settings = { limit, includeComments, includeSelftext, skipNSFW, timeFilter, customAfterEpoch, customBeforeEpoch };
 
   try {
     for (let modeIdx = startSortIdx; modeIdx < sortQueue.length; modeIdx++) {
@@ -622,21 +566,13 @@ async function startScrape(isResume) {
       }
     }
 
-    // Keyword analysis (optional)
-    if (keywordsEnabled) {
-      updateProgress("Running keyword analysis...", 95);
-      for (const post of allPosts) {
-        analyzePost(post, categories);
-      }
-    }
-
     updateProgress("Done!", 100);
     clearProgress();
 
     scrapeResult = {
       subreddit,
       posts: allPosts,
-      keywordsEnabled,
+      keywordsEnabled: false,
       summary: buildSummary(allPosts, keywordsEnabled),
     };
 
