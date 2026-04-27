@@ -1,6 +1,6 @@
-# LemonSqueeze — Reddit Scraper
+# LemonSqueeze
 
-A web app that scrapes posts and comments from any subreddit and exports them as CSV or JSON. I built this to make it easier to collect Reddit data for research without dealing with API keys or authentication headaches.
+A web app for scraping Reddit posts and comments, built to make collecting data for research easier — no API keys, no authentication headaches.
 
 ## What it does
 
@@ -59,3 +59,7 @@ You can customize the categories to whatever you're researching — the defaults
 - PullPush.io caps requests at 100 results per call and has rate limits (~15 requests/min)
 - Very large scrapes (thousands of posts with comments) will take a while since each post's comments need a separate request
 - PullPush mirrors Reddit data with some delay, so the very latest posts might not show up immediately
+
+## Built by
+
+[Jonas Heller](https://jonasheller.info) — Assistant Professor of Marketing, Maastricht University.
