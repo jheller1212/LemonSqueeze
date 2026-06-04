@@ -573,7 +573,7 @@ async function startScrape(isResume) {
       subreddit,
       posts: allPosts,
       keywordsEnabled: false,
-      summary: buildSummary(allPosts, keywordsEnabled),
+      summary: buildSummary(allPosts, false),
     };
 
     showResults(scrapeResult);
