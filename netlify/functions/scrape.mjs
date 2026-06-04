@@ -477,16 +477,24 @@ function parseRedditInput(input) {
 
 // --- Handler ---
 
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://lemonsqueeze.netlify.app';
+
 export async function handler(event) {
   const headers = {
-    "Access-Control-Allow-Origin": "https://redditscrapersbe.netlify.app",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+    "Access-Control-Allow-Headers": "Content-Type, x-api-key",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Content-Type": "application/json",
   };
 
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers, body: "" };
   if (event.httpMethod !== "POST") return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
+
+  const apiKey = event.headers['x-api-key'];
+  const expectedKey = process.env.SCRAPE_API_KEY || '';
+  if (expectedKey && apiKey !== expectedKey) {
+    return { statusCode: 403, headers, body: JSON.stringify({ error: 'Forbidden' }) };
+  }
 
   try {
     const body = JSON.parse(event.body);
@@ -530,6 +538,10 @@ export async function handler(event) {
 
     if (!parsedSubreddit) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: "Subreddit name is required" }) };
+    }
+
+    if (!/^[A-Za-z0-9_]{1,50}$/.test(parsedSubreddit)) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid subreddit name" }) };
     }
 
     // Only use the last 200 skipIds to prevent request body bloat
