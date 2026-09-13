@@ -28,6 +28,7 @@ def build_parser():
     p.add_argument("--date-to", help="stream mode: ISO date")
     p.add_argument("--comment-mode", choices=["settled", "immediate", "none"], default=None, help="override the study's comment_mode")
     p.add_argument("--data-root", default="data", help="where data/<study>/ lives (default: data)")
+    p.add_argument("--collect", action="store_true", help="collect posts even when post-collection steps are also given")
     p.add_argument("--dry-run", action="store_true", help="print the request plan and exit without any requests")
     p.add_argument("--count", action="store_true", help="measure the corpus: walk the posts only, write nothing, report sizes and time")
     p.add_argument("--collect-comments", action="store_true", help="fetch trees for pending posts older than comment_settle_hours")
@@ -91,7 +92,7 @@ def run_search(study, store, sources):
                         if store.upsert_post(post, query, source.name, sort, study["comment_mode"]):
                             n_new += 1
                             if study["comment_mode"] == "immediate":
-                                collect_for_post(source, store, post["id"], post["num_comments"])
+                                _collect_now(source, store, post)
                     total_new += n_new
                     say("    %d results, %d new to the study" % (n_seen, n_new))
     return total_new
@@ -105,12 +106,21 @@ def run_stream(study, store, source, limit):
         if store.upsert_post(post, "", source.name, "new", study["comment_mode"]):
             n += 1
             if study["comment_mode"] == "immediate":
-                collect_for_post(source, store, post["id"], post["num_comments"])
+                _collect_now(source, store, post)
             if n % 100 == 0:
                 say("    %d posts" % n)
         if limit and n >= limit:
             break
     return n
+
+
+def _collect_now(source, store, post):
+    """immediate mode: one bad thread stays pending; the run goes on."""
+    try:
+        collect_for_post(source, store, post["id"], post["num_comments"])
+    except Exception as exc:
+        store.defer_pending(post["id"], exc)
+        say("    comments for %s deferred (%s)" % (post["id"], str(exc)[:100]))
 
 
 def _in_window(post, study):
@@ -230,7 +240,8 @@ def step_filter(study, store):
     excluded = 0
     for prow in store.posts(include_excluded=True):
         post = json.loads(prow["data"])
-        n_comments = len(store.comments(prow["id"])) if prow["comments_complete"] is not None else None
+        # only a complete tree is an authoritative count; otherwise use Reddit's
+        n_comments = len(store.comments(prow["id"])) if prow["comments_complete"] else None
         reason = exclusion_reason(post, study, comment_count=n_comments)
         store.set_excluded(prow["id"], reason is not None, reason)
         excluded += 1 if reason else 0
@@ -259,7 +270,7 @@ def main(argv=None):
 
     mode = args.mode or ("search" if args.study else "stream")
     steps = args.collect_comments or args.apply_flags or args.filter or args.report
-    collecting = not steps or args.mode is not None
+    collecting = args.collect or not steps
 
     out_dir = study_dir(study, args.data_root)
 
@@ -290,8 +301,11 @@ def main(argv=None):
 
     store = Store(out_dir)
     if study.get("_path"):
-        digest = persist_config(study, out_dir)
+        digest, previous = persist_config(study, out_dir)
         say("study %s (config sha256 %s…)" % (study["name"], digest[:12]))
+        if previous:
+            say("  WARNING: the study config changed since the last run (was %s…); the old copy is kept as %s"
+                % (previous[0][:12], previous[1]))
     else:
         say("stream study %s" % study["name"])
 

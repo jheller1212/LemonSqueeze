@@ -125,15 +125,25 @@ def config_hash(path):
 
 
 def persist_config(study, out_dir):
-    """Copy the config beside the output with its hash so a run is repeatable."""
+    """Copy the config beside the output with its hash so a run is repeatable.
+
+    Returns (digest, previous) where previous is (old_digest, backup_name) if a
+    different config had already produced data in this folder, else None."""
     os.makedirs(out_dir, exist_ok=True)
     dest = os.path.join(out_dir, "study.yaml")
+    new_digest = config_hash(study["_path"])
+    previous = None
+    if os.path.exists(dest):
+        old_digest = config_hash(dest)
+        if old_digest != new_digest:
+            backup = "study.%s.yaml" % old_digest[:8]
+            shutil.copyfile(dest, os.path.join(out_dir, backup))
+            previous = (old_digest, backup)
     if os.path.abspath(study["_path"]) != os.path.abspath(dest):
         shutil.copyfile(study["_path"], dest)
-    digest = config_hash(dest)
     with open(os.path.join(out_dir, "study.sha256"), "w", encoding="utf-8") as f:
-        f.write(digest + "  study.yaml\n")
-    return digest
+        f.write(new_digest + "  study.yaml\n")
+    return new_digest, previous
 
 
 def stream_study(subreddit, date_from=None, date_to=None, name=None, comment_mode="settled"):

@@ -53,6 +53,8 @@ class RedditSearch(Source):
         if resp.status_code != 200:
             raise RequestError("Reddit token request failed: HTTP %s %s" % (resp.status_code, resp.text[:200]))
         body = resp.json()
+        if "access_token" not in body:
+            raise RequestError("Reddit token response had no access_token: %s" % str(body)[:200])
         self._token = body["access_token"]
         self._token_expiry = time.time() + int(body.get("expires_in", 3600))
 

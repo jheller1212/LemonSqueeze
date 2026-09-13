@@ -145,7 +145,7 @@ class Store:
         self.db.commit()
 
     def comments(self, post_id):
-        return [dict(r) for r in self.db.execute("SELECT * FROM comments WHERE post_id = ?", (post_id,))]
+        return [dict(r) for r in self.db.execute("SELECT * FROM comments WHERE post_id = ? ORDER BY rowid", (post_id,))]
 
     def set_comment_flags(self, comment_id, flags):
         self.db.execute("UPDATE comments SET flags = ? WHERE id = ?", (";".join(flags), comment_id))

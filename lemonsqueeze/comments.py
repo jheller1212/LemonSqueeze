@@ -24,6 +24,11 @@ def is_complete(walked_to_end, fetched, num_comments):
 
 def collect_for_post(source, store, post_id, num_comments):
     comments, walked = source.fetch_comments(post_id, num_comments)
+    if not walked:
+        # The source stopped short without raising; keep the post queued rather
+        # than replacing its rows with a partial tree and forgetting about it.
+        store.defer_pending(post_id, "source did not reach the end of the tree")
+        return len(comments), False
     # Sources may hand back overlapping pages; keep one row per id.
     seen = set()
     unique = []
