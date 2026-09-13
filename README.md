@@ -4,7 +4,7 @@ A web app for scraping Reddit posts and comments, built to make collecting data 
 
 ## What it does
 
-- Scrapes posts and full comment threads from any public subreddit
+- Scrapes posts and complete comment trees (all replies, with depth) from any archived subreddit — including banned and quarantined ones
 - Supports multiple sort modes (new, top, hot) in a single run
 - Deduplicates posts across sort modes so you don't get repeats
 - Optional keyword analysis — define your own categories and score posts by relevance
@@ -13,7 +13,7 @@ A web app for scraping Reddit posts and comments, built to make collecting data 
 
 ## How it works
 
-The frontend is a static site hosted on Netlify. When you hit "Squeeze," it sends requests to a serverless function that pulls data from PullPush.io (a public Reddit data mirror). Posts come back to the browser where they get processed, analyzed (if you turned on keywords), and packaged into downloadable files.
+The frontend is a static site hosted on Netlify. When you hit "Squeeze," it sends requests to a serverless function that pulls data from [Arctic Shift](https://arctic-shift.photon-reddit.com) (a public Reddit archive). Posts come back to the browser where they get processed, analyzed (if you turned on keywords), and packaged into downloadable files.
 
 No Reddit API credentials needed. No account setup. Just enter a subreddit and go.
 
@@ -30,7 +30,11 @@ This starts a local dev server at `http://localhost:8888` with the serverless fu
 
 ## Deploying
 
-The app deploys to Netlify. Push to main and it picks up changes automatically (or run `netlify deploy --prod` manually).
+The app deploys to Netlify, but the site is **not** linked to GitHub — merging to main does not deploy. Ship with:
+
+```bash
+netlify deploy --prod --dir web --functions netlify/functions
+```
 
 The config lives in `netlify.toml` — it publishes the `web/` folder and bundles the functions from `netlify/functions/`.
 
@@ -45,7 +49,7 @@ web/
 
 netlify/
   functions/
-    scrape.mjs  — serverless function that talks to PullPush.io
+    scrape.mjs  — serverless function that talks to Arctic Shift
 ```
 
 ## Keyword analysis (optional)
@@ -54,11 +58,19 @@ If you turn on keyword analysis in the UI, you can define categories with lists 
 
 You can customize the categories to whatever you're researching — the defaults are just examples.
 
+## Data completeness (read this before you cite the data)
+
+- **Comments are collected exhaustively.** A thread is paged through the archive until it is finished, however large; a 5,800-comment thread takes about 30 seconds. Every exported post carries `comments_complete` (`post_comments_complete` in the combined CSV). It is only `false` if you pressed Stop or an error interrupted a thread — treat those rows as partial.
+- **`comment_count_actual` will differ from `num_comments`.** `num_comments` is Reddit's own counter at archive time and routinely undercounts (it excludes some removed comments and lags behind late replies). The archive count is the authoritative one.
+- **`depth` is derived from `parent_id`**: 0 for a top-level comment, 1 for a reply to it, and so on. `null` means the parent comment was not in the archive, so the depth is unknown rather than 0. `parent_id` lets you rebuild the full tree in R or Python.
+- **Removed and deleted content** is kept as `[removed]` / `[deleted]` bodies with the author `[deleted]` — do not drop these rows silently, they are part of the conversation structure.
+- **Sort modes are archive-based, not Reddit's front page.** *Newest* is exact. *Top* and *Most discussed* rank by score / comment count **within each fetched time window**, not across all of Reddit history — the archive cannot sort by score. *Recent & popular* is the last 7 days, *Latest* the last 24 hours.
+- **Scores are a snapshot, and the snapshot is dated.** The archive ingests a post or comment within minutes (when its score is still ~1) and re-fetches it once about 36 hours later; that second fetch is the score you get, and it is never updated again. Every row carries `score_as_of` (ISO timestamp of that fetch). Items younger than ~36 hours have not had their second fetch yet, so their scores are near zero — filter on `score_as_of` if score matters to your analysis.
+
 ## Limits
 
-- PullPush.io caps requests at 100 results per call and has rate limits (~15 requests/min)
-- Very large scrapes (thousands of posts with comments) will take a while since each post's comments need a separate request
-- PullPush mirrors Reddit data with some delay, so the very latest posts might not show up immediately
+- Arctic Shift returns at most 100 items per request, so large scrapes take a while: each post's comments need at least one request
+- Netlify functions time out after 26 seconds; long threads are continued automatically across requests
 
 ## Built by
 

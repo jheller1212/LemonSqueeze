@@ -136,6 +136,7 @@ function buildSummary(posts, keywordsEnabled) {
     total_posts: posts.length,
     total_comments: totalComments,
     total_score: totalScore,
+    posts_with_incomplete_comments: posts.filter((p) => p.comments_complete === false).length,
   };
 
   if (keywordsEnabled) {
@@ -169,7 +170,10 @@ function saveProgress(data) {
       settings: data.settings,
     }));
   } catch {
-    // localStorage full or unavailable — silently fail
+    if (!saveProgress.warned) {
+      saveProgress.warned = true;
+      showError("Browser storage is full, so progress can no longer be saved for Resume. Collection continues — download your data when it finishes rather than relying on Resume.");
+    }
   }
 }
 
@@ -240,6 +244,60 @@ async function apiCall(body, maxRetries = 3) {
   }
 }
 
+// --- Comment completion ---
+// The server stops on a time budget and hands back a cursor; keep calling the
+// "comments" action until the thread is whole so no dataset is silently partial.
+async function completeComments(post, onProgress) {
+  const seen = new Set((post.comments || []).map((c) => c.id));
+  post.comments = post.comments || [];
+  while (post.comments_complete === false) {
+    if (onProgress) onProgress(post.comments.length);
+    const sent = post.comments_cursor;
+    const page = await apiCall({ action: "comments", postId: post.id, after: sent });
+    let added = 0;
+    for (const c of page.comments) {
+      if (!seen.has(c.id)) {
+        seen.add(c.id);
+        post.comments.push(c);
+        added++;
+      }
+    }
+    post.comments_cursor = page.after;
+    post.comments_complete = page.done;
+    // Never spin on a cursor that stopped moving; leave the post flagged partial.
+    if (!page.done && page.after === sent && added === 0) break;
+  }
+  assignDepths(post.comments);
+}
+
+// The archive returns comments flat; depth comes from walking parent_id.
+// 0 = top-level, null = parent not in the archive (or a malformed cycle),
+// so a missing parent is reported as unknown rather than a wrong 0.
+function assignDepths(comments) {
+  const byId = new Map(comments.map((c) => [c.id, c]));
+  const memo = new Map();
+  const visiting = new Set();
+  const depthOf = (c) => {
+    if (memo.has(c.id)) return memo.get(c.id);
+    if (visiting.has(c.id)) return null;
+    visiting.add(c.id);
+    let d;
+    if (!c.parent_id || c.parent_id.startsWith("t3_")) d = 0;
+    else {
+      const parent = byId.get(c.parent_id.slice(3));
+      if (!parent) d = null;
+      else {
+        const pd = depthOf(parent);
+        d = pd === null ? null : pd + 1;
+      }
+    }
+    visiting.delete(c.id);
+    memo.set(c.id, d);
+    return d;
+  };
+  for (const c of comments) c.depth = depthOf(c);
+}
+
 // --- UI references ---
 const analyzeBtn = document.getElementById("analyzeBtn");
 const scrapeBtn = document.getElementById("scrapeBtn");
@@ -294,6 +352,11 @@ analyzeBtn.addEventListener("click", async () => {
 
     if (result.type === "thread") {
       // Single thread mode
+      const expected = result.post.num_comments || 0;
+      await completeComments(result.post, (n) => {
+        const pct = expected ? Math.min(99, Math.round((n / expected) * 100)) : null;
+        updateProgress(`Collecting comments: ${n.toLocaleString()} of ~${expected.toLocaleString()}...`, pct);
+      });
       threadData = { subreddit: result.subreddit, post: result.post };
       showThreadResult(result);
     } else {
@@ -319,7 +382,8 @@ function showThreadResult(result) {
 
   document.getElementById("threadTitle").textContent = post.title;
   document.getElementById("threadMeta").textContent =
-    `u/${post.author} in r/${result.subreddit} — ${new Date(post.created_datetime).toLocaleDateString()}`;
+    `u/${post.author} in r/${result.subreddit} — ${new Date(post.created_datetime).toLocaleDateString()}` +
+    (post.comments_complete === false ? " — comment collection incomplete" : "");
 
   document.getElementById("threadStats").innerHTML = `
     <div class="stat-card"><div class="value">1</div><div class="label">Post</div></div>
@@ -505,6 +569,15 @@ async function startScrape(isResume) {
   const settings = { limit, includeComments, includeSelftext, skipNSFW, timeFilter, customAfterEpoch, customBeforeEpoch };
 
   try {
+    // A Stop can land mid-thread; those posts are already in allPosts and
+    // seenIds, so they would never be revisited by the batch loop below.
+    for (const p of allPosts) {
+      if (p.comments_complete !== false) continue;
+      await completeComments(p, (n) => {
+        updateProgress(`Resuming: finishing comments for "${p.title.slice(0, 40)}" (${n.toLocaleString()} of ~${(p.num_comments || 0).toLocaleString()})`, null);
+      });
+    }
+
     for (let modeIdx = startSortIdx; modeIdx < sortQueue.length; modeIdx++) {
       const mode = sortQueue[modeIdx];
       let after = modeIdx === startSortIdx ? startAfter : null;
@@ -547,6 +620,17 @@ async function startScrape(isResume) {
           seenIds.add(p.id);
           allPosts.push(p);
           modeFetched++;
+        }
+
+        if (includeComments) {
+          for (const p of newPosts) {
+            await completeComments(p, (n) => {
+              updateProgress(
+                `${mode.label}: ${allPosts.length} posts collected — finishing a large thread (${n.toLocaleString()} of ~${(p.num_comments || 0).toLocaleString()} comments)`,
+                percent
+              );
+            });
+          }
         }
 
         // Save progress every batch
@@ -671,6 +755,9 @@ function showResults(data) {
     <div class="stat-card"><div class="value">${s.total_comments.toLocaleString()}</div><div class="label">Comments</div></div>
     <div class="stat-card"><div class="value">${s.total_score.toLocaleString()}</div><div class="label">Total score</div></div>
   `;
+  if (s.posts_with_incomplete_comments) {
+    statsHtml += `<div class="stat-card"><div class="value">${s.posts_with_incomplete_comments}</div><div class="label">Posts with incomplete comments</div></div>`;
+  }
   if (s.posts_with_keyword_matches !== undefined) {
     statsHtml += `<div class="stat-card"><div class="value">${s.posts_with_keyword_matches}</div><div class="label">Keyword matches</div></div>`;
   }
@@ -779,12 +866,12 @@ function postsToCSV(posts, keywordsEnabled) {
   const headers = [
     "id", "subreddit", "title", "selftext", "author",
     "created_utc", "created_datetime", "date", "day_of_week", "hour_utc",
-    "score", "upvote_ratio", "num_comments", "permalink",
+    "score", "score_as_of", "upvote_ratio", "num_comments", "permalink",
     "link_flair_text", "over_18",
     "edited", "distinguished", "is_crosspost", "crosspost_subreddit",
     "total_awards_received", "gilded",
     "title_word_count", "selftext_word_count",
-    "title_char_count", "selftext_char_count", "comment_count_actual",
+    "title_char_count", "selftext_char_count", "comment_count_actual", "comments_complete",
   ];
   if (keywordsEnabled) {
     headers.push("relevance_score", "matched_categories", "matched_keywords");
@@ -804,6 +891,7 @@ function postsToCSV(posts, keywordsEnabled) {
       day_of_week: dp.day_of_week,
       hour_utc: dp.hour,
       score: p.score,
+      score_as_of: p.score_as_of || "",
       upvote_ratio: p.upvote_ratio,
       num_comments: p.num_comments,
       permalink: p.permalink,
@@ -820,6 +908,7 @@ function postsToCSV(posts, keywordsEnabled) {
       title_char_count: (p.title || "").length,
       selftext_char_count: (p.selftext || "").length,
       comment_count_actual: (p.comments || []).length,
+      comments_complete: p.comments_complete === undefined ? "" : p.comments_complete,
     };
     if (keywordsEnabled) {
       row.relevance_score = p.relevance_score || 0;
@@ -836,14 +925,14 @@ function combinedToCSV(posts, keywordsEnabled) {
   const headers = [
     "post_id", "subreddit", "post_title", "post_selftext", "post_author",
     "post_created_utc", "post_created_datetime", "post_date", "post_day_of_week", "post_hour_utc",
-    "post_score", "post_upvote_ratio", "post_num_comments", "post_permalink", "post_flair",
+    "post_score", "post_score_as_of", "post_upvote_ratio", "post_num_comments", "post_permalink", "post_flair",
     "post_over_18", "post_edited", "post_distinguished",
     "post_is_crosspost", "post_crosspost_subreddit",
     "post_total_awards", "post_gilded",
-    "post_title_word_count", "post_selftext_word_count",
+    "post_title_word_count", "post_selftext_word_count", "post_comments_complete",
     "comment_id", "comment_body", "comment_author",
     "comment_created_utc", "comment_created_datetime", "comment_date", "comment_day_of_week", "comment_hour_utc",
-    "comment_score", "comment_parent_id", "comment_is_submitter",
+    "comment_score", "comment_score_as_of", "comment_parent_id", "comment_is_submitter",
     "comment_depth", "comment_edited", "comment_distinguished", "comment_controversiality",
     "comment_body_word_count",
     "row_type",
@@ -868,6 +957,7 @@ function combinedToCSV(posts, keywordsEnabled) {
       post_day_of_week: pdp.day_of_week,
       post_hour_utc: pdp.hour,
       post_score: p.score,
+      post_score_as_of: p.score_as_of || "",
       post_upvote_ratio: p.upvote_ratio,
       post_num_comments: p.num_comments,
       post_permalink: p.permalink,
@@ -881,6 +971,7 @@ function combinedToCSV(posts, keywordsEnabled) {
       post_gilded: p.gilded || 0,
       post_title_word_count: wordCount(p.title),
       post_selftext_word_count: wordCount(p.selftext),
+      post_comments_complete: p.comments_complete === undefined ? "" : p.comments_complete,
     };
     if (keywordsEnabled) {
       postFields.post_relevance_score = p.relevance_score || 0;
@@ -911,6 +1002,7 @@ function combinedToCSV(posts, keywordsEnabled) {
           comment_day_of_week: cdp.day_of_week,
           comment_hour_utc: cdp.hour,
           comment_score: c.score,
+          comment_score_as_of: c.score_as_of || "",
           comment_parent_id: c.parent_id,
           comment_is_submitter: c.is_submitter,
           comment_depth: c.depth ?? "",
@@ -938,7 +1030,7 @@ function commentsToCSV(posts, keywordsEnabled) {
     "comment_id", "post_id", "subreddit", "post_title",
     "body", "author", "created_utc", "created_datetime",
     "date", "day_of_week", "hour_utc",
-    "score", "parent_id", "is_submitter",
+    "score", "score_as_of", "parent_id", "is_submitter",
     "depth", "edited", "distinguished", "controversiality",
     "body_word_count", "body_char_count",
   ];
@@ -963,6 +1055,7 @@ function commentsToCSV(posts, keywordsEnabled) {
         day_of_week: dp.day_of_week,
         hour_utc: dp.hour,
         score: c.score,
+        score_as_of: c.score_as_of || "",
         parent_id: c.parent_id,
         is_submitter: c.is_submitter,
         depth: c.depth ?? "",

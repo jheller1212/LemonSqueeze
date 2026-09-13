@@ -67,6 +67,13 @@ function getTimeFilterEpoch(timeFilter) {
   }
 }
 
+// Arctic Shift re-fetches each item ~36h after creation; the score is frozen at
+// that fetch. Export when, so researchers can tell a settled score from a fresh one.
+function scoreAsOf(raw) {
+  const t = raw._meta?.retrieved_2nd_on || raw.retrieved_on || raw.retrieved_utc || null;
+  return t ? new Date(t * 1000).toISOString() : "";
+}
+
 // --- Unified post/comment mappers ---
 function mapPost(raw) {
   const created = raw.created_utc || 0;
@@ -79,6 +86,7 @@ function mapPost(raw) {
     created_utc: created,
     created_datetime: created ? new Date(created * 1000).toISOString() : "",
     score: raw.score || 0,
+    score_as_of: scoreAsOf(raw),
     upvote_ratio: raw.upvote_ratio || 0,
     num_comments: raw.num_comments || 0,
     url: raw.url || "",
@@ -95,7 +103,7 @@ function mapPost(raw) {
   };
 }
 
-function mapComment(raw, depth = 0) {
+function mapComment(raw) {
   const created = raw.created_utc || 0;
   return {
     id: raw.id || "",
@@ -104,9 +112,10 @@ function mapComment(raw, depth = 0) {
     created_utc: created,
     created_datetime: created ? new Date(created * 1000).toISOString() : "",
     score: raw.score || 0,
+    score_as_of: scoreAsOf(raw),
     parent_id: raw.parent_id || "",
     is_submitter: raw.is_submitter || false,
-    depth: raw.depth ?? depth,
+    depth: null, // derived from parent_id by the client once the thread is whole
     edited: raw.edited ? (typeof raw.edited === "number" ? raw.edited : true) : false,
     distinguished: raw.distinguished || null,
     controversiality: raw.controversiality || 0,
@@ -129,48 +138,47 @@ async function arcticSearchPosts(subreddit, { limit = 100, before = null, after 
   return data?.data || [];
 }
 
-async function arcticSearchComments(postId, limit = 500) {
+// Arctic Shift pages are capped at 100 and `after` is exclusive, so a comment
+// posted in the same second as a page's last one would fall between pages.
+// Re-fetch from that second (dedup absorbs the overlap) and stop on the time
+// budget rather than a count — the caller continues from the returned cursor.
+async function arcticSearchComments(postId, { after = null, budgetMs = 18000 } = {}) {
   const linkId = postId.startsWith("t3_") ? postId : `t3_${postId}`;
-  const allComments = [];
+  const comments = [];
   const seenIds = new Set();
-  let after = null;
+  const started = Date.now();
+  let cursor = after;
+  let done = false;
 
-  // Paginate through comments in batches
-  while (allComments.length < limit) {
-    const params = new URLSearchParams({
-      link_id: linkId,
-      limit: String(Math.min(100, limit - allComments.length)),
-      sort: "asc",
-    });
-    if (after) params.set("after", String(after));
+  while (true) {
+    const params = new URLSearchParams({ link_id: linkId, limit: "100", sort: "asc" });
+    if (cursor) params.set("after", String(cursor));
 
-    const url = `${ARCTIC_SHIFT}/api/comments/search?${params}`;
-    const data = await fetchJSON(url);
+    const data = await fetchJSON(`${ARCTIC_SHIFT}/api/comments/search?${params}`);
     const batch = data?.data || [];
-    if (batch.length === 0) break;
 
-    // Deduplicate — time-based pagination can return overlapping comments
     for (const c of batch) {
       if (c.id && !seenIds.has(c.id)) {
         seenIds.add(c.id);
-        allComments.push(c);
+        comments.push(c);
       }
     }
 
-    // Use the last comment's created_utc for pagination
     const last = batch[batch.length - 1];
-    if (last?.created_utc) {
-      after = last.created_utc;
-    } else {
+    if (batch.length < 100 || !last?.created_utc) {
+      done = true;
       break;
     }
-
-    // Stop if we got fewer than requested (no more data)
-    if (batch.length < 100) break;
-    await delay(500);
+    // If a whole page sits inside one second, re-fetching from that second would
+    // return the same page forever; step past it (anything beyond 100 in that
+    // second is unreachable through this API) so the walk always advances.
+    const next = last.created_utc - 1;
+    cursor = next === cursor ? last.created_utc : next;
+    if (Date.now() - started > budgetMs) break;
+    await delay(300);
   }
 
-  return allComments;
+  return { comments, after: done ? null : cursor, done };
 }
 
 async function arcticGetSubreddit(subreddit) {
@@ -274,7 +282,7 @@ function flattenCommentTree(items, depth = 0) {
     // Skip "more" placeholders
     if (!item || item.kind === "more") continue;
 
-    result.push(mapComment(item, depth));
+    result.push(mapComment(item));
 
     // Arctic Shift nests replies in various ways
     const replies = item.replies || item.children;
@@ -283,6 +291,14 @@ function flattenCommentTree(items, depth = 0) {
     }
   }
   return result;
+}
+
+// --- Comment tree helpers ---
+
+function attachComments(post, { comments, after, done }) {
+  post.comments = comments.map((c) => mapComment(c));
+  post.comments_complete = done;
+  post.comments_cursor = after;
 }
 
 // --- Combined fetchers with fallback ---
@@ -368,20 +384,17 @@ async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAft
   return { posts: [], source: "none" };
 }
 
-async function fetchCommentsForPost(postId, subreddit) {
-  // Try Arctic Shift comment search (flat results, well-structured)
+async function fetchCommentsForPost(postId, { after = null, budgetMs = 18000 } = {}) {
   try {
-    const comments = await arcticSearchComments(postId);
-    if (comments.length > 0) return comments.map((c) => mapComment(c));
+    return await arcticSearchComments(postId, { after, budgetMs });
   } catch { /* fall through */ }
 
-  // Fallback to PullPush
   try {
     const comments = await pullPushGetComments(postId);
-    if (comments.length > 0) return comments.map((c) => mapComment(c));
+    return { comments, after: null, done: true };
   } catch { /* fall through */ }
 
-  return [];
+  return { comments: [], after: null, done: true };
 }
 
 // --- Analyze subreddit ---
@@ -483,8 +496,7 @@ async function scrapeThread(subreddit, postId) {
     throw new Error("Could not find this post. It may have been deleted, or the archive hasn't indexed it yet.");
   }
 
-  // Get comments
-  post.comments = await fetchCommentsForPost(postId, subreddit);
+  attachComments(post, await fetchCommentsForPost(postId, { budgetMs: 18000 }));
   return post;
 }
 
@@ -550,6 +562,24 @@ export async function handler(event) {
       return { statusCode: 200, headers, body: JSON.stringify({ type: "subreddit", ...analysis }) };
     }
 
+    // --- Comment continuation: the client calls this until done ---
+    if (body.action === "comments") {
+      const postId = String(body.postId || "").replace(/^t3_/, "");
+      if (!/^[a-z0-9]{1,12}$/.test(postId)) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid post id" }) };
+      }
+      const after = body.after == null ? null : Number(body.after);
+      if (after !== null && !Number.isFinite(after)) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid cursor" }) };
+      }
+      const page = await fetchCommentsForPost(postId, { after, budgetMs: 18000 });
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ comments: page.comments.map((c) => mapComment(c)), after: page.after, done: page.done }),
+      };
+    }
+
     // --- Scrape batch action ---
     const {
       subreddit,
@@ -609,22 +639,27 @@ export async function handler(event) {
       posts.push(mapPost(raw));
     }
 
-    // Fetch comments in parallel batches (with timeout guard for 26s limit)
+    // Fetch comments in parallel batches inside the 26s function limit. Anything
+    // this pass cannot finish is flagged incomplete with a cursor; the client
+    // continues those via the "comments" action so no dataset is silently partial.
     if (includeComments) {
       const PARALLEL = 3;
       const startTime = Date.now();
-      const TIME_BUDGET_MS = 20000; // Leave 6s buffer for response serialization
+      const TIME_BUDGET_MS = 18000;
+      const PER_POST_BUDGET_MS = 5000;
+      for (const p of posts) {
+        p.comments_complete = p.num_comments === 0;
+        p.comments_cursor = null;
+      }
       const postsNeedingComments = posts.filter((p) => p.num_comments > 0);
       for (let i = 0; i < postsNeedingComments.length; i += PARALLEL) {
         if (Date.now() - startTime > TIME_BUDGET_MS) break;
-        if (i > 0) await delay(1000);
+        if (i > 0) await delay(500);
         const batch = postsNeedingComments.slice(i, i + PARALLEL);
         const results = await Promise.all(
-          batch.map((p) => fetchCommentsForPost(p.id, parsedSubreddit)),
+          batch.map((p) => fetchCommentsForPost(p.id, { budgetMs: PER_POST_BUDGET_MS })),
         );
-        for (let j = 0; j < batch.length; j++) {
-          batch[j].comments = results[j];
-        }
+        for (let j = 0; j < batch.length; j++) attachComments(batch[j], results[j]);
       }
     }
 
