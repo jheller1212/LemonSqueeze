@@ -123,10 +123,10 @@
           <div class="option-block">
             <label class="option-label" for="limit">
               Posts per sort
-              <span class="info-tooltip" data-tooltip="How many posts to collect per sort mode. Reddit caps at ~1,000 per sort. E.g. 100 posts x 2 sorts = up to 200 posts.">?</span>
+              <span class="info-tooltip" data-tooltip="How many posts to collect per sort mode. To take every post in the chosen time range, use the Collect all button below.">?</span>
             </label>
-            <input type="number" id="limit" value="50" min="1" max="5000" class="input-small" title="Number of posts to fetch per sort mode (1-5,000)" />
-            <span class="limit-note">Max 5,000 per sort mode (archive-based, no Reddit API limits)</span>
+            <input type="number" id="limit" value="50" min="1" max="100000" class="input-small" title="Number of posts to fetch per sort mode (1-100,000)" />
+            <span class="limit-note">Up to 100,000 per sort mode — narrow the time range for more</span>
           </div>
 
           <!-- Time Filter -->

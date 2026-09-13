@@ -58,6 +58,13 @@ If you turn on keyword analysis in the UI, you can define categories with lists 
 
 You can customize the categories to whatever you're researching — the defaults are just examples.
 
+## How much is there, and how do I take all of it?
+
+- **A thread:** paste its URL and click Analyze — the whole comment tree is collected, nothing to configure. The card shows the archive count (authoritative) next to Reddit's own counter (undercounts).
+- **A community:** Analyze shows the archive's exact totals (posts and comments, with the date they were last counted). Pick a time range and the page counts what is inside it — exact for small ranges, a sampled estimate (typically within ±15%) for large ones — then click **Collect all N posts**. That sets the limit and switches to *New*, which walks every post in the range exactly once.
+- **Ceiling per run is 100,000 posts.** A browser tab holds that comfortably without comments; with comments, expect a few gigabytes and many hours for big communities. For anything larger, split by date range — one run per month or year — and concatenate the files in R or pandas. Runs above 20,000 posts stop saving Resume snapshots, so keep the tab open.
+- Comment counts for posts younger than ~36 hours are under-reported (see scores below), so an estimate for "today" will look low on comments.
+
 ## Data completeness (read this before you cite the data)
 
 - **Comments are collected exhaustively.** A thread is paged through the archive until it is finished, however large; a 5,800-comment thread takes about 30 seconds. Every exported post carries `comments_complete` (`post_comments_complete` in the combined CSV). It is only `false` if you pressed Stop or an error interrupted a thread — treat those rows as partial.
