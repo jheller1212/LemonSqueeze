@@ -142,6 +142,12 @@ async function arcticSearchPosts(subreddit, { limit = 100, before = null, after 
 // posted in the same second as a page's last one would fall between pages.
 // Re-fetch from that second (dedup absorbs the overlap) and stop on the time
 // budget rather than a count — the caller continues from the returned cursor.
+async function arcticSearchPostsAsc(subreddit, after, before) {
+  const params = new URLSearchParams({ subreddit, limit: "100", sort: "asc", after: String(after), before: String(before) });
+  const data = await fetchJSON(`${ARCTIC_SHIFT}/api/posts/search?${params}`);
+  return data?.data || [];
+}
+
 async function arcticSearchComments(postId, { after = null, budgetMs = 18000 } = {}) {
   const linkId = postId.startsWith("t3_") ? postId : `t3_${postId}`;
   const comments = [];
@@ -409,6 +415,7 @@ async function analyzeSubreddit(subreddit) {
     description: "",
     over18: false,
   };
+  let archive = { posts: 0, comments: 0, counted_at: 0, earliest_post: 0 };
 
   // Try Arctic Shift for subreddit metadata
   let estimatedTotal = 0;
@@ -421,8 +428,14 @@ async function analyzeSubreddit(subreddit) {
       info.created_utc = sub.created_utc || 0;
       info.description = (sub.public_description || sub.description || "").slice(0, 300);
       info.over18 = sub.over18 || sub.over_18 || false;
-      // The subreddit record carries an exact archived-post count; prefer it.
+      // The subreddit record carries exact archive totals; prefer them.
       estimatedTotal = sub._meta?.num_posts || 0;
+      archive = {
+        posts: sub._meta?.num_posts || 0,
+        comments: sub._meta?.num_comments || 0,
+        counted_at: sub._meta?.num_posts_updated_at || 0,
+        earliest_post: sub._meta?.earliest_post || 0,
+      };
     }
   } catch { /* use defaults */ }
 
@@ -469,9 +482,49 @@ async function analyzeSubreddit(subreddit) {
   return {
     info,
     probes,
-    estimatedTotalUnique: Math.min(estimatedTotal, 10000),
+    estimatedTotalUnique: estimatedTotal,
+    archive,
     sortConfigs: probes.filter((p) => p.available),
   };
+}
+
+// --- Count posts in a date window ---
+// The archive's aggregate index lags by months and times out on large
+// subreddits, so: walk the window exactly while it is small, otherwise sample
+// the posting rate at several points and extrapolate (calibrated to ~±15%).
+async function countWindow(subreddit, after, before) {
+  const EXACT_PAGES = 5;
+  let posts = 0, comments = 0, cursor = before, pages = 0, endPage = null;
+  while (pages < EXACT_PAGES) {
+    const batch = await arcticSearchPosts(subreddit, { limit: 100, after, before: cursor });
+    pages++;
+    posts += batch.length;
+    comments += batch.reduce((z, p) => z + (p.num_comments || 0), 0);
+    if (pages === 1) endPage = batch;
+    if (batch.length < 100) return { posts, comments, exact: true };
+    cursor = batch[batch.length - 1].created_utc;
+    await delay(200);
+  }
+
+  const span = before - after;
+  const rates = [];
+  const perPost = [];
+  const sample = (batch) => {
+    const ts = batch.map((p) => p.created_utc);
+    const dt = Math.max(...ts) - Math.min(...ts);
+    if (dt > 0) rates.push(batch.length / dt);
+    perPost.push(batch.reduce((z, p) => z + (p.num_comments || 0), 0) / batch.length);
+  };
+  sample(endPage);
+  for (const frac of [0, 0.25, 0.5, 0.75]) {
+    const batch = await arcticSearchPostsAsc(subreddit, Math.floor(after + span * frac), before);
+    if (batch.length === 100) sample(batch);
+    await delay(200);
+  }
+  const rate = rates.reduce((a, b) => a + b, 0) / rates.length;
+  const est = Math.round(rate * span);
+  const cpp = perPost.reduce((a, b) => a + b, 0) / perPost.length;
+  return { posts: est, comments: Math.round(est * cpp), exact: false };
 }
 
 // --- Thread scraping ---
@@ -560,6 +613,20 @@ export async function handler(event) {
 
       const analysis = await analyzeSubreddit(parsed.subreddit);
       return { statusCode: 200, headers, body: JSON.stringify({ type: "subreddit", ...analysis }) };
+    }
+
+    // --- Count posts in a window (exact when small, sampled estimate otherwise) ---
+    if (body.action === "count") {
+      const sub = String(body.subreddit || "").replace(/^r\//, "");
+      if (!/^[A-Za-z0-9_]{1,50}$/.test(sub)) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid subreddit name" }) };
+      }
+      const after = Number(body.afterEpoch), before = Number(body.beforeEpoch);
+      if (!Number.isFinite(after) || !Number.isFinite(before) || before <= after) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid date range" }) };
+      }
+      const result = await countWindow(sub, Math.floor(after), Math.floor(before));
+      return { statusCode: 200, headers, body: JSON.stringify(result) };
     }
 
     // --- Comment continuation: the client calls this until done ---
