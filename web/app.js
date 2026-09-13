@@ -599,6 +599,10 @@ function renderRangeCount(count) {
       const perPass = count.perKeyword ? Math.max(...count.perKeyword.map((p) => p.posts)) : n;
       document.getElementById("limit").value = String(perPass);
       sortPills.forEach((p) => p.classList.toggle("active", p.dataset.value === "new"));
+      const note = document.getElementById("keywordsNote");
+      if (note && count.perKeyword) {
+        note.textContent = `Limit set to ${perPass.toLocaleString()} per keyword — enough to collect every one of the ${n.toLocaleString()} matches.`;
+      }
       updateCollectionEstimate();
       const limitInput = document.getElementById("limit");
       limitInput.focus();
