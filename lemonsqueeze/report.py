@@ -1,4 +1,5 @@
 """Corpus summary for the methods section: what was found, by whom, how complete."""
+import json
 from collections import Counter, defaultdict
 
 
@@ -28,7 +29,17 @@ def build_report(store, study):
             if name:
                 comment_flag_counts[name] += 1
     excluded = Counter((p["exclude_reason"] or "").split(":")[0] for p in posts if p["excluded"])
+    removed = 0
+    multi_query = 0
+    for p in included:
+        data = json.loads(p["data"])
+        if (data.get("selftext") or "").strip() in ("[removed]", "[deleted]"):
+            removed += 1
+        if len({a["query"] for a in store.attributions(p["id"]) if a["query"]}) > 1:
+            multi_query += 1
     return {
+        "posts_removed": removed,
+        "posts_found_by_several_queries": multi_query,
         "posts_total": len(posts),
         "posts_included": len(included),
         "excluded_by_reason": dict(excluded),
@@ -53,6 +64,7 @@ def format_report(r):
         for q, n in sorted(qs.items()):
             lines.append("  r/%-24s %-30s %d" % (sub, q, n))
     lines.append("posts per source: " + (", ".join("%s=%d" % kv for kv in sorted(r["posts_per_source"].items())) or "-"))
+    lines.append("posts with [removed]/[deleted] body: %d; found by more than one query: %d" % (r.get("posts_removed", 0), r.get("posts_found_by_several_queries", 0)))
     share = r["share_comments_complete"]
     lines.append("comments: %d rows; %d posts still pending; complete trees %d/%d%s" % (
         r["comments_total"], r["comments_pending"], r["posts_comments_complete"], r["posts_with_comments_attempted"],

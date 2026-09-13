@@ -109,6 +109,12 @@ class ArcticShift(Source):
             nxt = last + 1
             before = last if nxt == before else nxt
 
+    def earliest_post(self, subreddit):
+        """Epoch of the subreddit's first archived post, or None."""
+        data = self._get("/subreddits/search", {"subreddit": subreddit, "limit": 1}, subreddit=subreddit, query="subreddit_meta", sort="", page=1)
+        meta = (data[0].get("_meta") or {}) if data else {}
+        return meta.get("earliest_post") or None
+
     # --- comments --------------------------------------------------------------
 
     def fetch_comments(self, post_id, num_comments):

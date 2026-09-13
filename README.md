@@ -30,7 +30,7 @@ This starts a local dev server at `http://localhost:8888` with the serverless fu
 
 ## Deploying
 
-The app deploys to Netlify, but the site is **not** linked to GitHub — merging to main does not deploy. Ship with:
+The site is linked to GitHub: every merge to `main` builds and publishes on Netlify within a minute or two, and every pull request gets a deploy preview. A manual deploy is only needed to publish something that is not on `main`:
 
 ```bash
 netlify deploy --prod --dir web --functions netlify/functions
@@ -129,6 +129,25 @@ A post found by several queries or sources appears once; `query`, `source` and `
 | `min_score`, `min_comments` | `null` | applied by `--filter` |
 | `flags` | `[]` | `name`, regex `pattern`, optional `near` regex that must occur within `window` characters, `scope: posts|comments|both`; `--apply-flags` writes matching names to `flags` |
 | `anonymise_authors` | `true` | authors exported as SHA-256(salt + name); salt and mapping stay in `data/<name>/` |
+
+### For the paper
+
+```bash
+python main.py --study studies/my_study.yaml --recall-sample 100   # 100 random posts per subreddit, drawn WITHOUT keywords
+#   code the `relevant` column (1/0) by hand, then:
+python main.py --study studies/my_study.yaml --recall-score        # recall + precision of the keyword list, 95% CI
+python main.py --study studies/my_study.yaml --methods             # a methods paragraph with the study's real numbers
+```
+
+Every column is defined in [DATA_DICTIONARY.md](DATA_DICTIONARY.md), with its caveats. Keyword search is literal matching (no stemming, no relevance ranking), so report the recall check: it is the only evidence that the keyword list captured the phenomenon. The sample is uniform over the window's posts — the window is walked once, so it is exact; windows above 100,000 posts are refused (sample month by month instead) rather than approximated — and a "hit" means the study's collection actually retrieved the post, not a re-implementation of the archive's matching.
+
+### Tests
+
+```bash
+pip install pytest && python -m pytest -q
+```
+
+CI runs the suite on Python 3.9 and 3.12 and syntax-checks the web app on every push. The suite covers the archive cursor logic (boundary seconds, one-second pages), the completeness rule, depth reconstruction, filters, flags, pseudonymisation, recall scoring, and the web/CLI column parity.
 
 `post_comments_complete` is `true` when the tree was walked to its end **and** at least 95% of Reddit's `num_comments` was collected. Reddit's counter undercounts the archive (see above), so an upper bound is deliberately not applied. Every step rewrites the CSV from the SQLite store, so `--apply-flags` and `--filter` can be rerun at will; `--filter` marks posts excluded rather than deleting them.
 

@@ -10,6 +10,8 @@ from . import __version__
 from .comments import collect_for_post, collect_pending, settle_wait_hint
 from .filters import exclusion_reason
 from .flags import compile_flags, evaluate
+from .methods import methods_paragraph
+from .recall import WindowTooLarge, draw_sample, format_score, score_sample, write_sample
 from .report import build_report, format_report
 from .sources import make_source
 from .store import Store
@@ -36,6 +38,11 @@ def build_parser():
     p.add_argument("--apply-flags", action="store_true", help="evaluate the study's flags and write the flags column")
     p.add_argument("--filter", action="store_true", help="apply exclude_terms, min_score, min_comments, drop [removed]/[deleted]")
     p.add_argument("--report", action="store_true", help="print corpus statistics")
+    p.add_argument("--recall-sample", type=int, metavar="N", default=None,
+                   help="draw N random posts PER SUBREDDIT from the window without keywords into recall_sample.csv for hand-coding")
+    p.add_argument("--recall-score", action="store_true", help="score the hand-coded recall_sample.csv (recall + 95%% CI)")
+    p.add_argument("--methods", action="store_true", help="print a methods paragraph with the study's numbers")
+    p.add_argument("--seed", type=int, default=None, help="random seed for --recall-sample")
     return p
 
 
@@ -249,6 +256,37 @@ def step_filter(study, store):
     say("filter: %d posts excluded, %d kept" % (excluded, len(store.posts())))
 
 
+def step_recall_sample(study, store, n, seed):
+    if not study["queries"]:
+        say("recall sample needs a study with queries (it measures what the keywords miss)")
+        return
+    source = make_source("arctic_shift", study, store)
+    date_to = study["date_to_ts"] or int(time.time())
+    collected = frozenset(p["id"] for p in store.posts(include_excluded=True))
+    if not collected:
+        say("recall sample needs a collected corpus first (run the search), because a hit means 'the collection retrieved it'")
+        return
+    rows = []
+    seen = set()
+    for sub in study["subreddits"]:
+        if sub.lower() == "all":
+            continue
+        date_from = study["date_from_ts"] or source.earliest_post(sub) or 1104537600
+        try:
+            drawn, walked = draw_sample(source, sub, date_from, date_to, n, study["queries"], seed, seen, collected)
+        except WindowTooLarge as exc:
+            say("  r/%s: skipped — %s" % (sub, exc))
+            continue
+        rows.extend(drawn)
+        hits = sum(1 for r in drawn if r["keyword_hit"])
+        say("  r/%s: %d sampled uniformly from %d posts in the window; %d of them were retrieved by the collection" % (
+            sub, len(drawn), walked, hits))
+        if len(drawn) < n:
+            say("    WARNING: only %d of the %d requested — the window holds fewer distinct posts, or sampling was cut short" % (len(drawn), n))
+    path = write_sample(rows, store.out_dir)
+    say("wrote %s — fill the `relevant` column (1/0) for every row, then run --recall-score" % path)
+
+
 def step_report(study, store):
     report = build_report(store, study)
     path = os.path.join(store.out_dir, "report.json")
@@ -269,7 +307,8 @@ def main(argv=None):
         return 2
 
     mode = args.mode or ("search" if args.study else "stream")
-    steps = args.collect_comments or args.apply_flags or args.filter or args.report
+    steps = (args.collect_comments or args.apply_flags or args.filter or args.report
+             or args.recall_sample is not None or args.recall_score or args.methods)
     collecting = args.collect or not steps
 
     out_dir = study_dir(study, args.data_root)
@@ -337,6 +376,16 @@ def main(argv=None):
 
         if args.report or collecting:
             step_report(study, store)
+        if args.recall_sample is not None:
+            step_recall_sample(study, store, args.recall_sample, args.seed)
+        if args.recall_score:
+            say(format_score(score_sample(store.out_dir)))
+        if args.methods:
+            recall = None
+            if os.path.exists(os.path.join(store.out_dir, "recall_sample.csv")):
+                recall = score_sample(store.out_dir)
+            say("")
+            say(methods_paragraph(study, build_report(store, study), store.out_dir, recall))
     except KeyboardInterrupt:
         say("\ninterrupted — progress is in %s; rerun to continue" % store.path)
         path, rows = write_csv(store, study)
