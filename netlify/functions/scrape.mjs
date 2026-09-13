@@ -6,7 +6,11 @@ const PULLPUSH = "https://api.pullpush.io";
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchJSON(url, retries = 3) {
+// PullPush became a paid service in 2026 and now answers free traffic with 429.
+// Once it refuses within an invocation, stop paying the retry/backoff cost for it.
+let pullPushBlocked = false;
+
+async function fetchJSON(url, retries = 3, { retryOn429 = true } = {}) {
   for (let attempt = 0; attempt < retries; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -17,7 +21,7 @@ async function fetchJSON(url, retries = 3) {
       });
 
       if (resp.status === 429) {
-        if (attempt < retries - 1) {
+        if (retryOn429 && attempt < retries - 1) {
           await delay(3000 * 2 ** attempt);
           continue;
         }
@@ -170,7 +174,7 @@ async function arcticSearchComments(postId, limit = 500) {
 }
 
 async function arcticGetSubreddit(subreddit) {
-  const params = new URLSearchParams({ name: subreddit, limit: "1" });
+  const params = new URLSearchParams({ subreddit, limit: "1" });
   const url = `${ARCTIC_SHIFT}/api/subreddits/search?${params}`;
   const data = await fetchJSON(url);
   const results = data?.data || [];
@@ -187,12 +191,15 @@ async function arcticGetPostById(postId) {
 
 async function arcticEstimatePostCount(subreddit) {
   try {
-    const url = `${ARCTIC_SHIFT}/api/posts/search/aggregate?subreddit=${encodeURIComponent(subreddit)}&aggregate=created_utc&frequency=year`;
+    // The aggregate endpoint requires an explicit time window; ask for everything
+    // since before Reddit existed so the bucket sum covers the whole archive.
+    const url = `${ARCTIC_SHIFT}/api/posts/search/aggregate?subreddit=${encodeURIComponent(subreddit)}&aggregate=created_utc&frequency=year&after=1104537600`;
     const data = await fetchJSON(url);
     const buckets = data?.data || data?.aggs || [];
     let total = 0;
     if (Array.isArray(buckets)) {
-      for (const b of buckets) total += b.doc_count || b.count || b.bg_count || 0;
+      // Counts come back as strings; coerce or += concatenates into a truthy "000..."
+      for (const b of buckets) total += Number(b.doc_count ?? b.count ?? b.bg_count ?? 0) || 0;
     }
     return total;
   } catch {
@@ -201,6 +208,18 @@ async function arcticEstimatePostCount(subreddit) {
 }
 
 // --- PullPush ---
+
+async function pullPushFetch(url) {
+  if (pullPushBlocked) throw new Error("PullPush unavailable");
+  try {
+    return await fetchJSON(url, 2, { retryOn429: false });
+  } catch (err) {
+    if (err.message.includes("Rate limited") || err.message.includes("HTTP 429")) {
+      pullPushBlocked = true;
+    }
+    throw err;
+  }
+}
 
 async function pullPushSearchSubmissions(subreddit, { size = 100, before = null, after = null, sortType = "created_utc", sort = "desc" } = {}) {
   const params = new URLSearchParams({
@@ -213,7 +232,7 @@ async function pullPushSearchSubmissions(subreddit, { size = 100, before = null,
   if (after) params.set("after", String(after));
 
   const url = `${PULLPUSH}/reddit/search/submission/?${params}`;
-  const data = await fetchJSON(url);
+  const data = await pullPushFetch(url);
   return data?.data || [];
 }
 
@@ -223,14 +242,14 @@ async function pullPushGetComments(postId) {
   // Try the dedicated submission comments endpoint first
   try {
     const url = `${PULLPUSH}/reddit/submission/${cleanId}/comments/`;
-    const data = await fetchJSON(url);
+    const data = await pullPushFetch(url);
     if (data?.data?.length > 0) return data.data;
   } catch { /* fall through */ }
 
   // Fallback to comment search
   try {
     const url = `${PULLPUSH}/reddit/search/comment/?link_id=${cleanId}&size=100&sort=asc`;
-    const data = await fetchJSON(url);
+    const data = await pullPushFetch(url);
     return data?.data || [];
   } catch {
     return [];
@@ -240,7 +259,7 @@ async function pullPushGetComments(postId) {
 async function pullPushGetSubmission(postId) {
   const cleanId = postId.replace(/^t3_/, "");
   const url = `${PULLPUSH}/reddit/search/submission/?ids=${cleanId}`;
-  const data = await fetchJSON(url);
+  const data = await pullPushFetch(url);
   const results = data?.data || [];
   return results.length > 0 ? results[0] : null;
 }
@@ -379,6 +398,7 @@ async function analyzeSubreddit(subreddit) {
   };
 
   // Try Arctic Shift for subreddit metadata
+  let estimatedTotal = 0;
   try {
     const sub = await arcticGetSubreddit(subreddit);
     if (sub) {
@@ -388,14 +408,24 @@ async function analyzeSubreddit(subreddit) {
       info.created_utc = sub.created_utc || 0;
       info.description = (sub.public_description || sub.description || "").slice(0, 300);
       info.over18 = sub.over18 || sub.over_18 || false;
+      // The subreddit record carries an exact archived-post count; prefer it.
+      estimatedTotal = sub._meta?.num_posts || 0;
     }
   } catch { /* use defaults */ }
 
-  // Estimate post count
-  let estimatedTotal = 0;
-  try {
-    estimatedTotal = await arcticEstimatePostCount(subreddit);
-  } catch { /* leave at 0 */ }
+  if (estimatedTotal === 0) {
+    try {
+      estimatedTotal = await arcticEstimatePostCount(subreddit);
+    } catch { /* leave at 0 */ }
+  }
+
+  // Last resort before declaring the subreddit missing: does it have any posts at all?
+  if (estimatedTotal === 0) {
+    try {
+      const probe = await arcticSearchPosts(subreddit, { limit: 1 });
+      if (probe.length > 0) estimatedTotal = 1000;
+    } catch { /* leave at 0 */ }
+  }
 
   // Verify subreddit exists via PullPush if Arctic Shift returned nothing
   if (estimatedTotal === 0) {
@@ -477,7 +507,7 @@ function parseRedditInput(input) {
 
 // --- Handler ---
 
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://lemonsqueeze.netlify.app';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://redditscrapersbe.netlify.app';
 
 export async function handler(event) {
   const headers = {
@@ -554,7 +584,7 @@ export async function handler(event) {
     const beforeEpochOverride = body.beforeEpoch ? Number(body.beforeEpoch) : null;
     const timeAfterEpoch = afterEpochOverride || getTimeFilterEpoch(timeFilter);
 
-    const { posts: rawPosts } = await fetchPostsBatch(
+    const { posts: rawPosts, source: postSource } = await fetchPostsBatch(
       parsedSubreddit,
       sort,
       effectiveBatch,
@@ -598,12 +628,19 @@ export async function handler(event) {
       }
     }
 
+    // Rank score-sorted modes within the batch. Arctic Shift only sorts by time,
+    // so when it answers, the ordering has to be applied here.
+    const isScoreSort = sort === "top" || sort === "controversial";
+    if (isScoreSort && postSource !== "pullpush") {
+      const key = sort === "top" ? "score" : "num_comments";
+      posts.sort((a, b) => (b[key] || 0) - (a[key] || 0));
+    }
+
     // Build pagination cursor for next page
     let nextAfter = null;
-    const isScoreSort = sort === "top" || sort === "controversial";
 
     if (posts.length > 0 && posts.length >= effectiveBatch) {
-      if (isScoreSort) {
+      if (isScoreSort && postSource === "pullpush") {
         // For score-sorted: use the minimum score as cursor
         const minScore = Math.min(...posts.map((p) => p.score));
         nextAfter = `score:${minScore}`;
