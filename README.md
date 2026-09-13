@@ -61,6 +61,7 @@ You can customize the categories to whatever you're researching — the defaults
 ## How much is there, and how do I take all of it?
 
 - **A thread:** paste its URL and click Analyze — the whole comment tree is collected, nothing to configure. The card shows the archive count (authoritative) next to Reddit's own counter (undercounts).
+- **Keywords in the web app:** after Analyze, the *Keywords* box takes one search per line — plain words, `"quoted phrases"`, `a OR b` for alternatives. Each line is its own newest-first pass over the archive; a post found by several lines is kept once and the `query` column lists them `;`-separated. The count line sizes each keyword before you run.
 - **A community:** Analyze shows the archive's exact totals (posts and comments, with the date they were last counted). Pick a time range and the page counts what is inside it — exact for small ranges, a sampled estimate (typically within ±15%) for large ones — then click **Collect all N posts**. That sets the limit and switches to *New*, which walks every post in the range exactly once.
 - **Ceiling per run is 100,000 posts.** A browser tab holds that comfortably without comments; with comments, expect a few gigabytes and many hours for big communities. For anything larger, split by date range — one run per month or year — and concatenate the files in R or pandas. Runs above 20,000 posts stop saving Resume snapshots, so keep the tab open.
 - Comment counts for posts younger than ~36 hours are under-reported (see scores below), so an estimate for "today" will look low on comments.
@@ -103,7 +104,7 @@ Output per study, in `data/<name>/`:
 
 | File | What |
 |---|---|
-| `posts_comments.csv` | the web app's 44-column combined schema, unchanged, plus `study`, `query`, `source`, `sort`, `collected_at`, `flags` |
+| `posts_comments.csv` | the web app's 45-column combined schema, unchanged (its last column `query` names the keyword(s) that found the post), plus `study`, `source`, `sort`, `collected_at`, `flags` |
 | `run_log.jsonl` | one line per request: timestamp, source, subreddit, query, sort, page, results, HTTP status |
 | `report.json` | unique posts per subreddit per query, posts per source, share of complete comment trees, flag counts |
 | `study.yaml` + `study.sha256` | the config that produced the data, so the run can be repeated |

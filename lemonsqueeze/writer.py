@@ -32,8 +32,8 @@ def write_csv(store, study):
             pf["post_author"] = pseudonym(pf["post_author"])
             attrs = store.attributions(prow["id"])
             study_cols = {
-                "study": study["name"],
                 "query": ";".join(sorted({a["query"] for a in attrs if a["query"]})),
+                "study": study["name"],
                 "source": ";".join(sorted({a["source"] for a in attrs})),
                 "sort": ";".join(sorted({a["sort"] for a in attrs if a["sort"]})),
                 "collected_at": iso(min(a["collected_at"] for a in attrs)) if attrs else iso(prow["discovered_at"]),

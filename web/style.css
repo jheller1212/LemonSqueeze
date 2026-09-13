@@ -1209,6 +1209,25 @@ footer {
 
 .link-button:hover { opacity: 0.85; }
 
+.option-block-wide { grid-column: 1 / -1; }
+
+.input-keywords {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 4.5rem;
+  padding: 0.6rem 0.75rem;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+}
+
+.input-keywords:focus { outline: none; border-color: var(--lemon); }
+
 .time-filter-note, .limit-note {
   font-size: 0.72rem;
   color: var(--text-dim);

@@ -14,7 +14,7 @@
   });
 })();
 
-// Default keyword categories (optional — only used when keyword analysis is enabled)
+// Legacy keyword-category scoring, kept for the JSON export shape; unused by the UI.
 const DEFAULT_KEYWORDS = {
   hiding_secrecy: [
     "hiding", "hidden", "secret", "secretly", "don't tell", "doesn't know",
@@ -451,6 +451,20 @@ function showAnalysis(analysis) {
 // --- Live collection estimate (updates when settings change) ---
 const MAX_POSTS_PER_SORT = 100000;
 
+// One search per line (or comma); "a OR b" becomes two passes because the
+// archive's full-text search has no OR. Quoted phrases pass through.
+function parseKeywords() {
+  const raw = document.getElementById("keywords")?.value || "";
+  const out = [];
+  for (const line of raw.split(/[\n,]+/)) {
+    for (const term of line.split(/\s+OR\s+/i)) {
+      const t = term.trim();
+      if (t && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
 // The time window the current controls describe, in epoch seconds.
 function selectedWindow() {
   const now = Math.floor(Date.now() / 1000);
@@ -475,17 +489,32 @@ let countRequestSeq = 0;
 async function countSelectedWindow() {
   const win = selectedWindow();
   if (!win || !currentAnalysis) return null;
-  if (win.all) {
+  const keywords = parseKeywords();
+  if (win.all && keywords.length === 0) {
     const a = currentAnalysis.archive || {};
     return { posts: a.posts || currentAnalysis.estimatedTotalUnique, comments: a.comments || 0, exact: true, all: true };
   }
-  const key = `${currentAnalysis.info.name}:${win.after}:${win.before}`;
-  if (!windowCounts.has(key)) {
-    const request = apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: win.after, beforeEpoch: win.before })
-      .catch((err) => { windowCounts.delete(key); throw err; });
-    windowCounts.set(key, request);
-  }
-  return windowCounts.get(key);
+  const after = win.all ? (currentAnalysis.archive?.earliest_post || 1104537600) : win.after;
+  const before = win.before;
+  const countOne = (query) => {
+    const key = `${currentAnalysis.info.name}:${after}:${before}:${query}`;
+    if (!windowCounts.has(key)) {
+      const request = apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: after, beforeEpoch: before, query })
+        .catch((err) => { windowCounts.delete(key); throw err; });
+      windowCounts.set(key, request);
+    }
+    return windowCounts.get(key);
+  };
+  if (keywords.length === 0) return countOne("");
+  const parts = await Promise.all(keywords.map(countOne));
+  return {
+    posts: parts.reduce((s, p) => s + p.posts, 0),
+    comments: parts.reduce((s, p) => s + p.comments, 0),
+    exact: parts.every((p) => p.exact),
+    all: false,
+    keywords: keywords.length,
+    perKeyword: keywords.map((k, i) => ({ keyword: k, posts: parts[i].posts })),
+  };
 }
 
 function updateCollectionEstimate() {
@@ -497,7 +526,8 @@ function updateCollectionEstimate() {
   const sortCount = Math.max(selectedSorts.length, 1);
   const limit = parseInt(document.getElementById("limit").value, 10) || 50;
   const includeComments = document.getElementById("includeComments").checked;
-  const totalPosts = Math.min(limit * sortCount, currentAnalysis.estimatedTotalUnique);
+  const passes = Math.max(parseKeywords().length, 1);
+  const totalPosts = Math.min(limit * sortCount * passes, currentAnalysis.estimatedTotalUnique);
   const etaSeconds = estimateTime(totalPosts, includeComments);
 
   el.innerHTML = `
@@ -537,9 +567,14 @@ function renderRangeCount(count) {
     return;
   }
   const approx = count.exact ? "" : "≈ ";
-  const qualifier = count.all
+  let qualifier = count.all
     ? "in the whole archive"
     : count.exact ? "in this time range (exact)" : "in this time range (estimate, typically within ±15%)";
+  if (count.keywords) {
+    const breakdown = count.perKeyword.map((p) => `${escapeHtml(p.keyword)}: ${approx}${p.posts.toLocaleString()}`).join(" · ");
+    qualifier = `matching your ${count.keywords} keyword${count.keywords > 1 ? "s" : ""} ${qualifier}` +
+      (count.keywords > 1 ? ` (${breakdown}; a post matching several is kept once)` : "");
+  }
   // Comment counts come from Reddit's counter at the archive's ~36h re-fetch,
   // so a window that reaches into the last 36 hours under-reports comments.
   const win = selectedWindow();
@@ -551,7 +586,7 @@ function renderRangeCount(count) {
   range.innerHTML = `
     <strong>${approx}${n.toLocaleString()} posts</strong> · ${approx}${count.comments.toLocaleString()} comments ${qualifier}.${recent}
     ${canTakeAll
-      ? `<button type="button" class="link-button" id="collectAllBtn">Collect all ${n.toLocaleString()} posts</button>`
+      ? `<button type="button" class="link-button" id="collectAllBtn">Collect all ${n.toLocaleString()} ${count.keywords ? "matching " : ""}posts</button>`
       : n > MAX_POSTS_PER_SORT
         ? `<span class="estimate-warn">More than ${MAX_POSTS_PER_SORT.toLocaleString()} — choose a narrower time range to collect everything, one range per run.</span>`
         : ""}
@@ -561,8 +596,13 @@ function renderRangeCount(count) {
     btn.addEventListener("click", () => {
       // "All" means every post in the window: New already yields each one once,
       // the other sorts would only re-select from the same set.
-      document.getElementById("limit").value = String(n);
+      const perPass = count.perKeyword ? Math.max(...count.perKeyword.map((p) => p.posts)) : n;
+      document.getElementById("limit").value = String(perPass);
       sortPills.forEach((p) => p.classList.toggle("active", p.dataset.value === "new"));
+      const note = document.getElementById("keywordsNote");
+      if (note && count.perKeyword) {
+        note.textContent = `Limit set to ${perPass.toLocaleString()} per keyword — enough to collect every one of the ${n.toLocaleString()} matches.`;
+      }
       updateCollectionEstimate();
       const limitInput = document.getElementById("limit");
       limitInput.focus();
@@ -576,6 +616,11 @@ document.getElementById("limit").addEventListener("input", updateCollectionEstim
 document.getElementById("includeComments").addEventListener("change", updateCollectionEstimate);
 sortPills.forEach((pill) => pill.addEventListener("click", () => setTimeout(updateCollectionEstimate, 0)));
 timeFilterSelect.addEventListener("change", updateCollectionEstimate);
+let keywordsTimer = null;
+document.getElementById("keywords").addEventListener("input", () => {
+  clearTimeout(keywordsTimer);
+  keywordsTimer = setTimeout(updateCollectionEstimate, 600);
+});
 dateFromInput.addEventListener("change", updateCollectionEstimate);
 dateToInput.addEventListener("change", updateCollectionEstimate);
 
@@ -586,7 +631,7 @@ async function startScrape(isResume) {
   const saved = isResume ? loadProgress() : null;
 
   let subreddit, sortQueue, limit, includeComments, includeSelftext, skipNSFW;
-  let timeFilter;
+  let timeFilter, keywords = [];
   let customAfterEpoch = null, customBeforeEpoch = null;
   let allPosts = [], seenIds = new Set();
   let startSortIdx = 0, startAfter = null, startModeFetched = 0;
@@ -604,6 +649,7 @@ async function startScrape(isResume) {
     includeSelftext = saved.settings.includeSelftext;
     skipNSFW = saved.settings.skipNSFW;
     timeFilter = saved.settings.timeFilter;
+    keywords = saved.settings.keywords || [];
     customAfterEpoch = saved.settings.customAfterEpoch || null;
     customBeforeEpoch = saved.settings.customBeforeEpoch || null;
   } else {
@@ -627,6 +673,7 @@ async function startScrape(isResume) {
     includeSelftext = document.getElementById("includeSelftext").checked;
     skipNSFW = document.getElementById("skipNSFW").checked;
     timeFilter = document.getElementById("timeFilter").value;
+    keywords = parseKeywords();
     if (timeFilter === "custom") {
       const fromVal = document.getElementById("dateFrom").value;
       const toVal = document.getElementById("dateTo").value;
@@ -645,21 +692,23 @@ async function startScrape(isResume) {
     if (urlMatch) subreddit = urlMatch[1];
     subreddit = subreddit.replace(/^r\//, "");
 
-    // Build sort queue
+    // Build sort queue: with keywords, one pass per keyword per sort
     sortQueue = [];
-    for (const mode of sortModes) {
-      if (mode === "top" && limit > 1000 && currentAnalysis) {
-        sortQueue.push({ sort: "top", timeFilter: "all", label: "Top (All Time)" });
-        sortQueue.push({ sort: "top", timeFilter: "year", label: "Top (Year)" });
-        sortQueue.push({ sort: "top", timeFilter: "month", label: "Top (Month)" });
-      } else if (mode === "controversial" && limit > 1000 && currentAnalysis) {
-        sortQueue.push({ sort: "controversial", timeFilter: "all", label: "Controversial (All Time)" });
-        sortQueue.push({ sort: "controversial", timeFilter: "year", label: "Controversial (Year)" });
-        sortQueue.push({ sort: "controversial", timeFilter: "month", label: "Controversial (Month)" });
+    const passes = keywords.length ? keywords : [""];
+    for (const query of passes) for (const mode of sortModes) {
+      const tag = query ? ` "${query}"` : "";
+      if (mode === "top" && limit > 1000 && currentAnalysis && !query) {
+        sortQueue.push({ sort: "top", timeFilter: "all", label: "Top (All Time)", query });
+        sortQueue.push({ sort: "top", timeFilter: "year", label: "Top (Year)", query });
+        sortQueue.push({ sort: "top", timeFilter: "month", label: "Top (Month)", query });
+      } else if (mode === "controversial" && limit > 1000 && currentAnalysis && !query) {
+        sortQueue.push({ sort: "controversial", timeFilter: "all", label: "Controversial (All Time)", query });
+        sortQueue.push({ sort: "controversial", timeFilter: "year", label: "Controversial (Year)", query });
+        sortQueue.push({ sort: "controversial", timeFilter: "month", label: "Controversial (Month)", query });
       } else {
         // The selected range applies to every sort; the server derives the
         // window from the preset, or from the custom epochs sent alongside.
-        sortQueue.push({ sort: mode, timeFilter, label: mode.charAt(0).toUpperCase() + mode.slice(1) });
+        sortQueue.push({ sort: mode, timeFilter, label: mode.charAt(0).toUpperCase() + mode.slice(1) + tag, query });
       }
     }
   }
@@ -678,7 +727,7 @@ async function startScrape(isResume) {
   progressFill.style.width = "0%";
   updateProgress(isResume ? `Resuming... (${allPosts.length} posts already collected)` : "Starting squeeze...");
 
-  const settings = { limit, includeComments, includeSelftext, skipNSFW, timeFilter, customAfterEpoch, customBeforeEpoch };
+  const settings = { limit, includeComments, includeSelftext, skipNSFW, timeFilter, keywords, customAfterEpoch, customBeforeEpoch };
 
   try {
     // A Stop can land mid-thread; those posts are already in allPosts and
@@ -714,11 +763,19 @@ async function startScrape(isResume) {
           includeComments,
           skipIds: Array.from(seenIds),
           timeFilter: mode.timeFilter,
+          query: mode.query || "",
         };
         if (customAfterEpoch) reqBody.afterEpoch = customAfterEpoch;
         if (customBeforeEpoch) reqBody.beforeEpoch = customBeforeEpoch;
         const batchResp = await apiCall(reqBody);
 
+        if (mode.query) {
+          for (const p of batchResp.posts) {
+            const existing = allPosts.find((x) => x.id === p.id);
+            if (existing && existing.query && !existing.query.split(";").includes(mode.query)) existing.query += ";" + mode.query;
+            p.query = mode.query;
+          }
+        }
         let newPosts = batchResp.posts.filter((p) => !seenIds.has(p.id));
 
         if (skipNSFW) {
@@ -983,7 +1040,7 @@ function postsToCSV(posts, keywordsEnabled) {
     "edited", "distinguished", "is_crosspost", "crosspost_subreddit",
     "total_awards_received", "gilded",
     "title_word_count", "selftext_word_count",
-    "title_char_count", "selftext_char_count", "comment_count_actual", "comments_complete",
+    "title_char_count", "selftext_char_count", "comment_count_actual", "comments_complete", "query",
   ];
   if (keywordsEnabled) {
     headers.push("relevance_score", "matched_categories", "matched_keywords");
@@ -1021,6 +1078,7 @@ function postsToCSV(posts, keywordsEnabled) {
       selftext_char_count: (p.selftext || "").length,
       comment_count_actual: (p.comments || []).length,
       comments_complete: p.comments_complete === undefined ? "" : p.comments_complete,
+      query: p.query || "",
     };
     if (keywordsEnabled) {
       row.relevance_score = p.relevance_score || 0;
@@ -1047,7 +1105,7 @@ function combinedToCSV(posts, keywordsEnabled) {
     "comment_score", "comment_score_as_of", "comment_parent_id", "comment_is_submitter",
     "comment_depth", "comment_edited", "comment_distinguished", "comment_controversiality",
     "comment_body_word_count",
-    "row_type",
+    "row_type", "query",
   ];
   if (keywordsEnabled) {
     headers.push("post_relevance_score", "post_matched_categories", "post_matched_keywords",
@@ -1084,6 +1142,7 @@ function combinedToCSV(posts, keywordsEnabled) {
       post_title_word_count: wordCount(p.title),
       post_selftext_word_count: wordCount(p.selftext),
       post_comments_complete: p.comments_complete === undefined ? "" : p.comments_complete,
+      query: p.query || "",
     };
     if (keywordsEnabled) {
       postFields.post_relevance_score = p.relevance_score || 0;
@@ -1144,7 +1203,7 @@ function commentsToCSV(posts, keywordsEnabled) {
     "date", "day_of_week", "hour_utc",
     "score", "score_as_of", "parent_id", "is_submitter",
     "depth", "edited", "distinguished", "controversiality",
-    "body_word_count", "body_char_count",
+    "body_word_count", "body_char_count", "query",
   ];
   if (keywordsEnabled) {
     headers.push("relevance_score", "matched_categories", "matched_keywords");
@@ -1176,6 +1235,7 @@ function commentsToCSV(posts, keywordsEnabled) {
         controversiality: c.controversiality || 0,
         body_word_count: wordCount(c.body),
         body_char_count: (c.body || "").length,
+        query: p.query || "",
       };
       if (keywordsEnabled) {
         row.relevance_score = c.relevance_score || 0;

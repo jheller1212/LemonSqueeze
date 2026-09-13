@@ -124,7 +124,7 @@ function mapComment(raw) {
 
 // --- Arctic Shift ---
 
-async function arcticSearchPosts(subreddit, { limit = 100, before = null, after = null } = {}) {
+async function arcticSearchPosts(subreddit, { limit = 100, before = null, after = null, query = "" } = {}) {
   const params = new URLSearchParams({
     subreddit,
     limit: String(Math.min(limit, 100)),
@@ -132,6 +132,7 @@ async function arcticSearchPosts(subreddit, { limit = 100, before = null, after 
   });
   if (before) params.set("before", String(before));
   if (after) params.set("after", String(after));
+  if (query) params.set("query", query);
 
   const url = `${ARCTIC_SHIFT}/api/posts/search?${params}`;
   const data = await fetchJSON(url);
@@ -142,8 +143,9 @@ async function arcticSearchPosts(subreddit, { limit = 100, before = null, after 
 // posted in the same second as a page's last one would fall between pages.
 // Re-fetch from that second (dedup absorbs the overlap) and stop on the time
 // budget rather than a count — the caller continues from the returned cursor.
-async function arcticSearchPostsAsc(subreddit, after, before) {
+async function arcticSearchPostsAsc(subreddit, after, before, query = "") {
   const params = new URLSearchParams({ subreddit, limit: "100", sort: "asc", after: String(after), before: String(before) });
+  if (query) params.set("query", query);
   const data = await fetchJSON(`${ARCTIC_SHIFT}/api/posts/search?${params}`);
   return data?.data || [];
 }
@@ -309,7 +311,7 @@ function attachComments(post, { comments, after, done }) {
 
 // --- Combined fetchers with fallback ---
 
-async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAfterEpoch, hardBeforeEpoch) {
+async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAfterEpoch, hardBeforeEpoch, query = "") {
   const isScoreSort = sort === "top" || sort === "controversial";
   const isHot = sort === "hot";
   const isRising = sort === "rising";
@@ -338,7 +340,7 @@ async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAft
   // --- Strategy per sort mode ---
 
   // For score-sorted modes, prefer PullPush (it supports sort_type=score)
-  if (isScoreSort) {
+  if (isScoreSort && !query) {
     const ppSortType = sort === "top" ? "score" : "num_comments";
 
     // Try PullPush with score sort
@@ -369,10 +371,13 @@ async function fetchPostsBatch(subreddit, sort, limit, paginationCursor, timeAft
       limit,
       before: beforeUtc || undefined,
       after: effectiveAfter || undefined,
+      query,
     };
     const posts = await arcticSearchPosts(subreddit, asParams);
     if (posts.length > 0) return { posts, source: "arctic" };
   } catch { /* fall through */ }
+
+  if (query) return { posts: [], source: "none" };
 
   // Last fallback: PullPush time-sorted
   try {
@@ -492,12 +497,16 @@ async function analyzeSubreddit(subreddit) {
 // The archive's aggregate index lags by months and times out on large
 // subreddits, so: walk the window exactly while it is small, otherwise sample
 // the posting rate at several points and extrapolate (calibrated to ~±15%).
-async function countWindow(subreddit, after, before) {
+async function countWindow(subreddit, after, before, query = "") {
   const EXACT_PAGES = 5;
+  // Stay inside the 26s function limit even when the archive sheds load:
+  // stop walking exactly at EXACT_BUDGET_MS and stop sampling at TOTAL_BUDGET_MS.
+  const EXACT_BUDGET_MS = 12000, TOTAL_BUDGET_MS = 20000;
+  const started = Date.now();
   let posts = 0, comments = 0, cursor = before, pages = 0, endPage = null;
   const seen = new Set();
-  while (pages < EXACT_PAGES) {
-    const batch = await arcticSearchPosts(subreddit, { limit: 100, after, before: cursor });
+  while (pages < EXACT_PAGES && Date.now() - started < EXACT_BUDGET_MS) {
+    const batch = await arcticSearchPosts(subreddit, { limit: 100, after, before: cursor, query });
     pages++;
     for (const p of batch) {
       if (!p.id || seen.has(p.id)) continue;
@@ -525,7 +534,8 @@ async function countWindow(subreddit, after, before) {
   };
   sample(endPage);
   for (const frac of [0, 0.25, 0.5, 0.75]) {
-    const batch = await arcticSearchPostsAsc(subreddit, Math.floor(after + span * frac), before);
+    if (Date.now() - started > TOTAL_BUDGET_MS) break;
+    const batch = await arcticSearchPostsAsc(subreddit, Math.floor(after + span * frac), before, query);
     if (batch.length === 100) sample(batch);
     await delay(200);
   }
@@ -634,7 +644,8 @@ export async function handler(event) {
       if (!Number.isFinite(after) || !Number.isFinite(before) || before <= after) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid date range" }) };
       }
-      const result = await countWindow(sub, Math.floor(after), Math.floor(before));
+      const query = String(body.query || "").trim().slice(0, 200);
+      const result = await countWindow(sub, Math.floor(after), Math.floor(before), query);
       return { statusCode: 200, headers, body: JSON.stringify(result) };
     }
 
@@ -689,6 +700,7 @@ export async function handler(event) {
     const afterEpochOverride = body.afterEpoch ? Number(body.afterEpoch) : null;
     const beforeEpochOverride = body.beforeEpoch ? Number(body.beforeEpoch) : null;
     const timeAfterEpoch = afterEpochOverride || getTimeFilterEpoch(timeFilter);
+    const query = String(body.query || "").trim().slice(0, 200);
 
     const { posts: rawPosts, source: postSource } = await fetchPostsBatch(
       parsedSubreddit,
@@ -697,6 +709,7 @@ export async function handler(event) {
       after,
       timeAfterEpoch > 0 ? timeAfterEpoch : undefined,
       beforeEpochOverride || undefined,
+      query,
     );
 
     if (!rawPosts || rawPosts.length === 0) {
