@@ -1,0 +1,17 @@
+# Acceptance-test study: two small subreddits, two queries, one month back.
+#   python main.py --mode search --study studies/test_study.yaml --dry-run
+#   python main.py --mode search --study studies/test_study.yaml
+name: test_study
+subreddits: [replika, CharacterAI]
+queries:
+  - 'chatgpt'
+  - '"my ai"'
+date_from: 30 days ago
+sources: [arctic_shift]
+comment_mode: settled
+comment_settle_hours: 72
+flags:
+  - name: relationship_language
+    pattern: '\b(boyfriend|girlfriend|husband|wife|partner)\b'
+    scope: both
+anonymise_authors: true
