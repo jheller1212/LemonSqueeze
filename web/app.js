@@ -156,7 +156,16 @@ function buildSummary(posts, keywordsEnabled) {
 // --- Save/Resume system ---
 const STORAGE_KEY = "lemonsqueeze_progress";
 
+const RESUME_SNAPSHOT_MAX_POSTS = 20000;
+
 function saveProgress(data) {
+  if (data.posts.length > RESUME_SNAPSHOT_MAX_POSTS) {
+    if (!saveProgress.warned) {
+      saveProgress.warned = true;
+      showError(`This run is past ${RESUME_SNAPSHOT_MAX_POSTS.toLocaleString()} posts, so progress is no longer saved for Resume. Keep this tab open until it finishes, then download.`);
+    }
+    return;
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       timestamp: Date.now(),
@@ -387,9 +396,9 @@ function showThreadResult(result) {
 
   document.getElementById("threadStats").innerHTML = `
     <div class="stat-card"><div class="value">1</div><div class="label">Post</div></div>
-    <div class="stat-card"><div class="value">${commentCount.toLocaleString()}</div><div class="label">Comments collected</div></div>
+    <div class="stat-card"><div class="value">${commentCount.toLocaleString()}</div><div class="label">Comments in archive (all collected)</div></div>
     <div class="stat-card"><div class="value">${post.score.toLocaleString()}</div><div class="label">Score</div></div>
-    <div class="stat-card"><div class="value">${post.num_comments.toLocaleString()}</div><div class="label">Total comments (Reddit)</div></div>
+    <div class="stat-card"><div class="value">${post.num_comments.toLocaleString()}</div><div class="label">Reddit's own count (undercounts)</div></div>
   `;
 
   threadCard.classList.remove("hidden");
@@ -424,8 +433,13 @@ function showAnalysis(analysis) {
     ? ((Date.now() / 1000 - info.created_utc) / (365.25 * 86400)).toFixed(1)
     : "?";
 
+  const archive = analysis.archive || { posts: estimatedTotalUnique, comments: 0, counted_at: 0 };
+  const countedAt = archive.counted_at
+    ? new Date(archive.counted_at * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short" })
+    : "";
   document.getElementById("analysisStats").innerHTML = `
-    <div class="stat-card"><div class="value">${estimatedTotalUnique.toLocaleString()}</div><div class="label">Archived posts</div></div>
+    <div class="stat-card"><div class="value">${archive.posts.toLocaleString()}</div><div class="label">Archived posts${countedAt ? ` (as of ${countedAt})` : ""}</div></div>
+    <div class="stat-card"><div class="value">${archive.comments.toLocaleString()}</div><div class="label">Archived comments</div></div>
     <div class="stat-card"><div class="value">${info.subscribers.toLocaleString()}</div><div class="label">Subscribers</div></div>
     <div class="stat-card"><div class="value">${ageYears}y</div><div class="label">Community age</div></div>
   `;
@@ -435,6 +449,45 @@ function showAnalysis(analysis) {
 }
 
 // --- Live collection estimate (updates when settings change) ---
+const MAX_POSTS_PER_SORT = 100000;
+
+// The time window the current controls describe, in epoch seconds.
+function selectedWindow() {
+  const now = Math.floor(Date.now() / 1000);
+  const tf = document.getElementById("timeFilter").value;
+  const days = { day: 1, week: 7, month: 30, year: 365 }[tf];
+  if (days) return { after: now - days * 86400, before: now, all: false };
+  if (tf === "custom") {
+    const fromVal = document.getElementById("dateFrom").value;
+    const toVal = document.getElementById("dateTo").value;
+    if (!fromVal) return null;
+    const after = Math.floor(new Date(fromVal + "T00:00:00Z").getTime() / 1000);
+    const before = toVal ? Math.floor(new Date(toVal + "T23:59:59Z").getTime() / 1000) : now;
+    return before > after ? { after, before, all: false } : null;
+  }
+  return { after: 0, before: now, all: true };
+}
+
+// Window counts are fetched once per window and remembered for the session.
+const windowCounts = new Map();
+let countRequestSeq = 0;
+
+async function countSelectedWindow() {
+  const win = selectedWindow();
+  if (!win || !currentAnalysis) return null;
+  if (win.all) {
+    const a = currentAnalysis.archive || {};
+    return { posts: a.posts || currentAnalysis.estimatedTotalUnique, comments: a.comments || 0, exact: true, all: true };
+  }
+  const key = `${currentAnalysis.info.name}:${win.after}:${win.before}`;
+  if (!windowCounts.has(key)) {
+    const request = apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: win.after, beforeEpoch: win.before })
+      .catch((err) => { windowCounts.delete(key); throw err; });
+    windowCounts.set(key, request);
+  }
+  return windowCounts.get(key);
+}
+
 function updateCollectionEstimate() {
   if (!currentAnalysis) return;
   const el = document.getElementById("collectionEstimate");
@@ -459,14 +512,72 @@ function updateCollectionEstimate() {
         <span class="estimate-label">estimated time${includeComments ? " (with comments)" : ""}</span>
       </div>
     </div>
+    <p class="estimate-range" id="estimateRange">Counting posts in this time range…</p>
     <p class="estimate-hint">Progress is saved automatically — you can close this tab and resume later.</p>
   `;
+
+  const seq = ++countRequestSeq;
+  countSelectedWindow()
+    .then((count) => {
+      if (seq !== countRequestSeq) return; // a newer window superseded this one
+      renderRangeCount(count);
+    })
+    .catch((err) => {
+      if (seq !== countRequestSeq) return;
+      const range = document.getElementById("estimateRange");
+      if (range) range.textContent = `Could not count this range (${err.message}).`;
+    });
+}
+
+function renderRangeCount(count) {
+  const range = document.getElementById("estimateRange");
+  if (!range) return;
+  if (!count) {
+    range.textContent = "Pick a start date to count posts in a custom range.";
+    return;
+  }
+  const approx = count.exact ? "" : "≈ ";
+  const qualifier = count.all
+    ? "in the whole archive"
+    : count.exact ? "in this time range (exact)" : "in this time range (estimate, typically within ±15%)";
+  // Comment counts come from Reddit's counter at the archive's ~36h re-fetch,
+  // so a window that reaches into the last 36 hours under-reports comments.
+  const win = selectedWindow();
+  const recent = win && !win.all && win.before > Date.now() / 1000 - 36 * 3600
+    ? " Comment count is low for posts under ~36 hours old."
+    : "";
+  const n = count.posts;
+  const canTakeAll = n > 0 && n <= MAX_POSTS_PER_SORT;
+  range.innerHTML = `
+    <strong>${approx}${n.toLocaleString()} posts</strong> · ${approx}${count.comments.toLocaleString()} comments ${qualifier}.${recent}
+    ${canTakeAll
+      ? `<button type="button" class="link-button" id="collectAllBtn">Collect all ${n.toLocaleString()} posts</button>`
+      : n > MAX_POSTS_PER_SORT
+        ? `<span class="estimate-warn">More than ${MAX_POSTS_PER_SORT.toLocaleString()} — choose a narrower time range to collect everything, one range per run.</span>`
+        : ""}
+  `;
+  const btn = document.getElementById("collectAllBtn");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      // "All" means every post in the window: New already yields each one once,
+      // the other sorts would only re-select from the same set.
+      document.getElementById("limit").value = String(n);
+      sortPills.forEach((p) => p.classList.toggle("active", p.dataset.value === "new"));
+      updateCollectionEstimate();
+      const limitInput = document.getElementById("limit");
+      limitInput.focus();
+      limitInput.blur();
+    });
+  }
 }
 
 // Wire settings changes to update the estimate live
 document.getElementById("limit").addEventListener("input", updateCollectionEstimate);
 document.getElementById("includeComments").addEventListener("change", updateCollectionEstimate);
 sortPills.forEach((pill) => pill.addEventListener("click", () => setTimeout(updateCollectionEstimate, 0)));
+timeFilterSelect.addEventListener("change", updateCollectionEstimate);
+dateFromInput.addEventListener("change", updateCollectionEstimate);
+dateToInput.addEventListener("change", updateCollectionEstimate);
 
 // --- Scrape Orchestration ---
 scrapeBtn.addEventListener("click", () => startScrape(false));
@@ -511,7 +622,7 @@ async function startScrape(isResume) {
     }
 
     limit = parseInt(document.getElementById("limit").value, 10) || 50;
-    limit = Math.min(limit, 5000); // Hard cap
+    limit = Math.min(limit, MAX_POSTS_PER_SORT);
     includeComments = document.getElementById("includeComments").checked;
     includeSelftext = document.getElementById("includeSelftext").checked;
     skipNSFW = document.getElementById("skipNSFW").checked;
@@ -546,8 +657,9 @@ async function startScrape(isResume) {
         sortQueue.push({ sort: "controversial", timeFilter: "year", label: "Controversial (Year)" });
         sortQueue.push({ sort: "controversial", timeFilter: "month", label: "Controversial (Month)" });
       } else {
-        const tf = (mode === "top" || mode === "controversial") ? timeFilter : "all";
-        sortQueue.push({ sort: mode, timeFilter: tf, label: mode.charAt(0).toUpperCase() + mode.slice(1) });
+        // The selected range applies to every sort; the server derives the
+        // window from the preset, or from the custom epochs sent alongside.
+        sortQueue.push({ sort: mode, timeFilter, label: mode.charAt(0).toUpperCase() + mode.slice(1) });
       }
     }
   }

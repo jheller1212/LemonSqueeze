@@ -1178,6 +1178,37 @@ footer {
   margin-top: 0.5rem;
 }
 
+.estimate-range {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 0.75rem;
+  line-height: 1.6;
+}
+
+.estimate-range strong { color: var(--text); }
+
+.estimate-warn {
+  display: block;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 0.35rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--lemon);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.link-button:hover { opacity: 0.85; }
+
 .time-filter-note, .limit-note {
   font-size: 0.72rem;
   color: var(--text-dim);
