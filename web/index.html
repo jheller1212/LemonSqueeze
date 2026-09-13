@@ -119,6 +119,16 @@
             </div>
           </div>
 
+          <!-- Keywords -->
+          <div class="option-block option-block-wide">
+            <label class="option-label" for="keywords">
+              Keywords (optional)
+              <span class="info-tooltip" data-tooltip="Leave empty to collect every post. Otherwise one search per line: plain words match anywhere in title or body, &quot;quotes&quot; match an exact phrase, OR separates alternatives. Each line is its own pass over the archive; posts found by several lines are kept once.">?</span>
+            </label>
+            <textarea id="keywords" rows="3" class="input-keywords" placeholder='chatgpt&#10;"my ai"&#10;replika OR character.ai' spellcheck="false"></textarea>
+            <span class="limit-note" id="keywordsNote">Empty = every post in the time range. With keywords, results come newest first and the limit applies per keyword.</span>
+          </div>
+
           <!-- Post Limit -->
           <div class="option-block">
             <label class="option-label" for="limit">

@@ -19,10 +19,10 @@ BASE_COLUMNS = [
     "comment_score", "comment_score_as_of", "comment_parent_id", "comment_is_submitter",
     "comment_depth", "comment_edited", "comment_distinguished", "comment_controversiality",
     "comment_body_word_count",
-    "row_type",
+    "row_type", "query",
 ]
 
-STUDY_COLUMNS = ["study", "query", "source", "sort", "collected_at", "flags"]
+STUDY_COLUMNS = ["study", "source", "sort", "collected_at", "flags"]
 
 COLUMNS = BASE_COLUMNS + STUDY_COLUMNS
 
