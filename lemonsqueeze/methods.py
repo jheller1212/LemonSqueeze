@@ -52,7 +52,7 @@ def methods_paragraph(study, report, out_dir, recall=None):
     else:
         parts.append("Every post in %s within the window was retrieved." % subs)
     if first:
-        parts.append("Retrieval ran between %s and %s in %d archive requests, each logged." % (first[:10], last[:10], n_requests))
+        parts.append("Retrieval ran between %s and %s in %d archive requests (retries included), each logged." % (first[:10], last[:10], n_requests))
     parts.append("The corpus comprises %d posts%s and %d comments." % (
         report["posts_included"],
         " (%d further posts were excluded: %s)" % (
@@ -71,7 +71,8 @@ def methods_paragraph(study, report, out_dir, recall=None):
     parts.append("Post and comment scores are those captured by the archive at its second retrieval, about 36 hours "
                  "after creation, and are not updated thereafter; the capture time is recorded per row.")
     if study.get("anonymise_authors", True):
-        parts.append("Author names were replaced by salted SHA-256 pseudonyms; the salt was not retained with the dataset.")
+        parts.append("Author names were replaced by salted SHA-256 pseudonyms; the salt and the name-to-pseudonym "
+                     "mapping are held by the researchers and are not part of the shared dataset.")
     if recall and recall.get("recall") is not None:
         lo, hi = recall["recall_ci95"]
         parts.append("A recall check on a time-stratified random sample of %d posts drawn without keywords found that "

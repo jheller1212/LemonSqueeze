@@ -30,7 +30,7 @@ This starts a local dev server at `http://localhost:8888` with the serverless fu
 
 ## Deploying
 
-The app deploys to Netlify, but the site is **not** linked to GitHub — merging to main does not deploy. Ship with:
+The site is linked to GitHub: every merge to `main` builds and publishes on Netlify within a minute or two, and every pull request gets a deploy preview. A manual deploy is only needed to publish something that is not on `main`:
 
 ```bash
 netlify deploy --prod --dir web --functions netlify/functions
