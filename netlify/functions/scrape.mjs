@@ -495,14 +495,22 @@ async function analyzeSubreddit(subreddit) {
 async function countWindow(subreddit, after, before) {
   const EXACT_PAGES = 5;
   let posts = 0, comments = 0, cursor = before, pages = 0, endPage = null;
+  const seen = new Set();
   while (pages < EXACT_PAGES) {
     const batch = await arcticSearchPosts(subreddit, { limit: 100, after, before: cursor });
     pages++;
-    posts += batch.length;
-    comments += batch.reduce((z, p) => z + (p.num_comments || 0), 0);
+    for (const p of batch) {
+      if (!p.id || seen.has(p.id)) continue;
+      seen.add(p.id);
+      posts++;
+      comments += p.num_comments || 0;
+    }
     if (pages === 1) endPage = batch;
     if (batch.length < 100) return { posts, comments, exact: true };
-    cursor = batch[batch.length - 1].created_utc;
+    // `before` is exclusive: re-cover the boundary second, dedup absorbs the overlap
+    const last = batch[batch.length - 1].created_utc;
+    const next = last + 1;
+    cursor = next === cursor ? last : next;
     await delay(200);
   }
 
@@ -521,6 +529,7 @@ async function countWindow(subreddit, after, before) {
     if (batch.length === 100) sample(batch);
     await delay(200);
   }
+  if (rates.length === 0) return { posts, comments, exact: false };
   const rate = rates.reduce((a, b) => a + b, 0) / rates.length;
   const est = Math.round(rate * span);
   const cpp = perPost.reduce((a, b) => a + b, 0) / perPost.length;

@@ -481,7 +481,9 @@ async function countSelectedWindow() {
   }
   const key = `${currentAnalysis.info.name}:${win.after}:${win.before}`;
   if (!windowCounts.has(key)) {
-    windowCounts.set(key, apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: win.after, beforeEpoch: win.before }));
+    const request = apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: win.after, beforeEpoch: win.before })
+      .catch((err) => { windowCounts.delete(key); throw err; });
+    windowCounts.set(key, request);
   }
   return windowCounts.get(key);
 }
@@ -655,8 +657,9 @@ async function startScrape(isResume) {
         sortQueue.push({ sort: "controversial", timeFilter: "year", label: "Controversial (Year)" });
         sortQueue.push({ sort: "controversial", timeFilter: "month", label: "Controversial (Month)" });
       } else {
-        const tf = (mode === "top" || mode === "controversial") ? timeFilter : "all";
-        sortQueue.push({ sort: mode, timeFilter: tf, label: mode.charAt(0).toUpperCase() + mode.slice(1) });
+        // The selected range applies to every sort; the server derives the
+        // window from the preset, or from the custom epochs sent alongside.
+        sortQueue.push({ sort: mode, timeFilter, label: mode.charAt(0).toUpperCase() + mode.slice(1) });
       }
     }
   }
