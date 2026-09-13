@@ -74,5 +74,5 @@ Times are UTC. Booleans are `True`/`False`. Empty means *not available from the 
 - `run_log.jsonl` — one line per archive request (timestamp, source, subreddit, query, sort, page, results, HTTP status, retry attempt). Cite the retrieval dates from here.
 - `report.json` — counts per subreddit and query, per source, completeness share, removed-body count, flag counts.
 - `study.yaml` + `study.sha256` — the configuration that produced the data. `study.<hash>.yaml` backups appear if the config changed between runs.
-- `recall_sample.csv` — created by `--recall-sample N`; code the `relevant` column and run `--recall-score`.
+- `recall_sample.csv` — created by `--recall-sample N` (N per subreddit): an exact uniform random sample of the window's posts drawn without keywords (windows above 100,000 posts are refused; sample per month). `keyword_hit` is exact — whether the study's collection retrieved that post; `keyword_hit_local` is a regex approximation for reference only. Code `relevant` (1/0) and run `--recall-score`.
 - `.salt`, `study.sqlite` — local only, never share: the salt and the author→pseudonym mapping.

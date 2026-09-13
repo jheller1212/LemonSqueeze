@@ -1,10 +1,10 @@
 """Recall check for keyword studies.
 
 Keyword search is literal matching, so the corpus misses whatever the keyword
-list misses. This draws a time-stratified random sample of posts from the
-subreddit *without* keywords, marks which ones the study's keywords would have
-caught, and leaves a `relevant` column for hand-coding. Scoring the coded file
-gives recall with a confidence interval for the methods section.
+list misses. This draws a uniform random sample of posts from the window
+*without* keywords, records whether the study's collection retrieved each one,
+and leaves a `relevant` column for hand-coding. Scoring the coded file gives
+recall with a confidence interval for the methods section.
 """
 import csv
 import math
@@ -12,9 +12,11 @@ import os
 import random
 import re
 
+from .schema import iso
+
 SAMPLE_FILE = "recall_sample.csv"
 SAMPLE_COLUMNS = ["post_id", "subreddit", "created_datetime", "permalink", "title", "selftext",
-                  "keyword_hit", "keywords_matched", "relevant", "coder_note"]
+                  "keyword_hit", "keyword_hit_local", "keywords_matched_local", "relevant", "coder_note"]
 
 
 def compile_terms(queries):
@@ -37,37 +39,54 @@ def matched_terms(terms, text):
     return [label for label, patterns in terms if all(p.search(text) for p in patterns)]
 
 
-def draw_sample(source, subreddit, date_from, date_to, n, queries, seed=None):
-    """n posts at random moments in the window (one per moment), with local keyword hits."""
+UNIFORM_WALK_MAX = 100000
+
+
+class WindowTooLarge(ValueError):
+    pass
+
+
+def draw_sample(source, subreddit, date_from, date_to, n, queries, seed=None, seen=None,
+                collected_ids=frozenset(), max_walk=UNIFORM_WALK_MAX):
+    """A uniform random sample of n posts from the window, drawn without keywords.
+
+    The window's posts are walked once (100 per request) and sampled exactly.
+    Windows above `max_walk` posts are refused rather than approximated —
+    narrow the dates or sample per sub-window. `keyword_hit` is exact: whether
+    the study's collection retrieved the post. `keyword_hit_local` is a regex
+    approximation kept for reference."""
     rng = random.Random(seed)
+    seen = seen if seen is not None else set()
     terms = compile_terms(queries)
-    seen = set()
+
+    walked = []
+    for post in source.list_posts(subreddit, date_from, date_to):
+        walked.append(post)
+        if len(walked) > max_walk:
+            raise WindowTooLarge("r/%s has more than %d posts in this window; narrow date_from/date_to "
+                                 "(or sample one month at a time) for an exact recall sample" % (subreddit, max_walk))
+    pool = [p for p in walked if p["id"] not in seen]
+    picks = rng.sample(pool, min(n, len(pool)))
+
     rows = []
-    attempts = 0
-    while len(rows) < n and attempts < n * 3:
-        attempts += 1
-        moment = rng.randint(date_from, date_to)
-        page = source.page_before(subreddit, moment, date_from, limit=25)
-        candidates = [p for p in page if p["id"] not in seen]
-        if not candidates:
-            continue
-        post = rng.choice(candidates)
+    for post in picks:
         seen.add(post["id"])
         text = "%s\n%s" % (post["title"], post["selftext"])
-        hits = matched_terms(terms, text)
+        local = matched_terms(terms, text)
         rows.append({
             "post_id": post["id"],
             "subreddit": post["subreddit"],
-            "created_datetime": post.get("created_datetime") or "",
+            "created_datetime": iso(post["created_utc"]),
             "permalink": post["permalink"],
             "title": post["title"],
             "selftext": post["selftext"][:2000],
-            "keyword_hit": bool(hits),
-            "keywords_matched": ";".join(hits),
+            "keyword_hit": post["id"] in collected_ids,
+            "keyword_hit_local": bool(local),
+            "keywords_matched_local": ";".join(local),
             "relevant": "",
             "coder_note": "",
         })
-    return rows
+    return rows, len(walked)
 
 
 def write_sample(rows, out_dir):
@@ -81,7 +100,7 @@ def write_sample(rows, out_dir):
 
 def wilson(k, n, z=1.96):
     if n == 0:
-        return (0.0, 0.0)
+        return (0.0, 1.0)
     p = k / n
     denom = 1 + z * z / n
     centre = (p + z * z / (2 * n)) / denom
@@ -127,7 +146,7 @@ def format_score(r):
         r["sampled"], r["coded"], r["relevant"], 100 * (r["base_rate"] or 0))]
     if r["recall"] is not None:
         lo, hi = r["recall_ci95"]
-        lines.append("  recall of the keyword list:    %.1f%%  (95%% CI %.0f-%.0f%%; %d of %d relevant posts contain a keyword)" % (
+        lines.append("  recall of the keyword list:    %.1f%%  (95%% CI %.0f-%.0f%%; %d of %d relevant posts were retrieved by the collection)" % (
             100 * r["recall"], 100 * lo, 100 * hi, r["relevant_caught_by_keywords"], r["relevant"]))
     if r["precision_in_sample"] is not None:
         lo, hi = r["precision_ci95"]

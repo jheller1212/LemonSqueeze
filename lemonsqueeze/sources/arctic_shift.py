@@ -109,18 +109,11 @@ class ArcticShift(Source):
             nxt = last + 1
             before = last if nxt == before else nxt
 
-    def page_before(self, subreddit, moment, date_from, limit=25):
-        """One page of posts created just before `moment` (recall sampling)."""
-        params = {"subreddit": subreddit, "limit": limit, "sort": "desc", "before": moment + 1}
-        if date_from:
-            params["after"] = date_from - 1
-        batch = self._get("/posts/search", params, subreddit=subreddit, query="recall_sample", sort="desc", page=1)
-        out = []
-        for raw in batch:
-            post = self.normalise_post(raw, self.name)
-            post["created_datetime"] = iso(post["created_utc"])
-            out.append(post)
-        return out
+    def earliest_post(self, subreddit):
+        """Epoch of the subreddit's first archived post, or None."""
+        data = self._get("/subreddits/search", {"subreddit": subreddit, "limit": 1}, subreddit=subreddit, query="subreddit_meta", sort="", page=1)
+        meta = (data[0].get("_meta") or {}) if data else {}
+        return meta.get("earliest_post") or None
 
     # --- comments --------------------------------------------------------------
 

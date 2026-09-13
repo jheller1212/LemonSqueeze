@@ -66,18 +66,19 @@ def methods_paragraph(study, report, out_dir, recall=None):
                          report["posts_comments_complete"], report["posts_with_comments_attempted"],
                          100 * (report["share_comments_complete"] or 0)))
     if report.get("posts_removed"):
-        parts.append("%d posts (%.1f%%) had their body removed or deleted at archive time; their metadata and comment "
-                     "structure are retained." % (report["posts_removed"], 100 * report["posts_removed"] / max(1, report["posts_total"])))
+        parts.append("%d of the retained posts (%.1f%%) have a body removed or deleted at archive time; their metadata "
+                     "and comment structure are kept." % (report["posts_removed"], 100 * report["posts_removed"] / max(1, report["posts_included"])))
     parts.append("Post and comment scores are those captured by the archive at its second retrieval, about 36 hours "
                  "after creation, and are not updated thereafter; the capture time is recorded per row.")
     if study.get("anonymise_authors", True):
-        parts.append("Author names were replaced by salted SHA-256 pseudonyms; the salt and the name-to-pseudonym "
-                     "mapping are held by the researchers and are not part of the shared dataset.")
+        parts.append("Author names were replaced by SHA-256 pseudonyms with a per-study salt; the pseudonyms are "
+                     "stable within the dataset and can be reversed only with the salt and mapping stored alongside "
+                     "the raw output (`.salt`, `study.sqlite`), which are withheld from any shared or archived version.")
     if recall and recall.get("recall") is not None:
         lo, hi = recall["recall_ci95"]
-        parts.append("A recall check on a time-stratified random sample of %d posts drawn without keywords found that "
-                     "the keyword list captured %.0f%% of relevant posts (95%% CI %.0f–%.0f%%)." % (
-                         recall["coded"], 100 * recall["recall"], 100 * lo, 100 * hi))
+        parts.append("A recall check on a random sample of %d posts drawn from the same window without keywords, "
+                     "hand-coded for relevance, found that the collection had retrieved %.0f%% of the relevant posts "
+                     "(95%% CI %.0f–%.0f%%)." % (recall["coded"], 100 * recall["recall"], 100 * lo, 100 * hi))
     return " ".join(parts)
 
 

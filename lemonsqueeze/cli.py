@@ -11,7 +11,7 @@ from .comments import collect_for_post, collect_pending, settle_wait_hint
 from .filters import exclusion_reason
 from .flags import compile_flags, evaluate
 from .methods import methods_paragraph
-from .recall import draw_sample, format_score, score_sample, write_sample
+from .recall import WindowTooLarge, draw_sample, format_score, score_sample, write_sample
 from .report import build_report, format_report
 from .sources import make_source
 from .store import Store
@@ -39,7 +39,7 @@ def build_parser():
     p.add_argument("--filter", action="store_true", help="apply exclude_terms, min_score, min_comments, drop [removed]/[deleted]")
     p.add_argument("--report", action="store_true", help="print corpus statistics")
     p.add_argument("--recall-sample", type=int, metavar="N", default=None,
-                   help="draw N random posts from the window WITHOUT keywords into recall_sample.csv for hand-coding")
+                   help="draw N random posts PER SUBREDDIT from the window without keywords into recall_sample.csv for hand-coding")
     p.add_argument("--recall-score", action="store_true", help="score the hand-coded recall_sample.csv (recall + 95%% CI)")
     p.add_argument("--methods", action="store_true", help="print a methods paragraph with the study's numbers")
     p.add_argument("--seed", type=int, default=None, help="random seed for --recall-sample")
@@ -262,18 +262,27 @@ def step_recall_sample(study, store, n, seed):
         return
     source = make_source("arctic_shift", study, store)
     date_to = study["date_to_ts"] or int(time.time())
-    date_from = study["date_from_ts"]
-    if not date_from:
-        # sample the same span the study covers; without a start, use the archive's earliest post
-        date_from = 1104537600
+    collected = frozenset(p["id"] for p in store.posts(include_excluded=True))
+    if not collected:
+        say("recall sample needs a collected corpus first (run the search), because a hit means 'the collection retrieved it'")
+        return
     rows = []
+    seen = set()
     for sub in study["subreddits"]:
         if sub.lower() == "all":
             continue
-        drawn = draw_sample(source, sub, date_from, date_to, n, study["queries"], seed)
+        date_from = study["date_from_ts"] or source.earliest_post(sub) or 1104537600
+        try:
+            drawn, walked = draw_sample(source, sub, date_from, date_to, n, study["queries"], seed, seen, collected)
+        except WindowTooLarge as exc:
+            say("  r/%s: skipped — %s" % (sub, exc))
+            continue
         rows.extend(drawn)
-        say("  r/%s: %d sampled, %d would have been caught by the keywords" % (
-            sub, len(drawn), sum(1 for r in drawn if r["keyword_hit"])))
+        hits = sum(1 for r in drawn if r["keyword_hit"])
+        say("  r/%s: %d sampled uniformly from %d posts in the window; %d of them were retrieved by the collection" % (
+            sub, len(drawn), walked, hits))
+        if len(drawn) < n:
+            say("    WARNING: only %d of the %d requested — the window holds fewer distinct posts, or sampling was cut short" % (len(drawn), n))
     path = write_sample(rows, store.out_dir)
     say("wrote %s — fill the `relevant` column (1/0) for every row, then run --recall-score" % path)
 

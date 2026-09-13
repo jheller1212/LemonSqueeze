@@ -133,13 +133,13 @@ A post found by several queries or sources appears once; `query`, `source` and `
 ### For the paper
 
 ```bash
-python main.py --study studies/my_study.yaml --recall-sample 100   # random posts WITHOUT keywords -> recall_sample.csv
+python main.py --study studies/my_study.yaml --recall-sample 100   # 100 random posts per subreddit, drawn WITHOUT keywords
 #   code the `relevant` column (1/0) by hand, then:
 python main.py --study studies/my_study.yaml --recall-score        # recall + precision of the keyword list, 95% CI
 python main.py --study studies/my_study.yaml --methods             # a methods paragraph with the study's real numbers
 ```
 
-Every column is defined in [DATA_DICTIONARY.md](DATA_DICTIONARY.md), with its caveats. Keyword search is literal matching (no stemming, no relevance ranking), so report the recall check: it is the only evidence that the keyword list captured the phenomenon.
+Every column is defined in [DATA_DICTIONARY.md](DATA_DICTIONARY.md), with its caveats. Keyword search is literal matching (no stemming, no relevance ranking), so report the recall check: it is the only evidence that the keyword list captured the phenomenon. The sample is uniform over the window's posts — the window is walked once, so it is exact; windows above 100,000 posts are refused (sample month by month instead) rather than approximated — and a "hit" means the study's collection actually retrieved the post, not a re-implementation of the archive's matching.
 
 ### Tests
 

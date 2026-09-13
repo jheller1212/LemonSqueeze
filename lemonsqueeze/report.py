@@ -31,7 +31,7 @@ def build_report(store, study):
     excluded = Counter((p["exclude_reason"] or "").split(":")[0] for p in posts if p["excluded"])
     removed = 0
     multi_query = 0
-    for p in posts:
+    for p in included:
         data = json.loads(p["data"])
         if (data.get("selftext") or "").strip() in ("[removed]", "[deleted]"):
             removed += 1
