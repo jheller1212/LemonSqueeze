@@ -11,3 +11,9 @@ venv/
 .netlify
 
 .DS_Store
+
+# per-study output: sqlite store, salt and author mapping stay local
+data/*
+!data/.gitkeep
+*.sqlite
+.salt

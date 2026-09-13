@@ -79,6 +79,58 @@ You can customize the categories to whatever you're researching — the defaults
 - Arctic Shift returns at most 100 items per request, so large scrapes take a while: each post's comments need at least one request
 - Netlify functions time out after 26 seconds; long threads are continued automatically across requests
 
+## Command line: studies, search mode, stream mode
+
+The web app is for one community at a time. The command line runs a *study*: any set of subreddits and keyword queries over any time window, written to its own folder with a request log so the corpus can be described exactly. Nothing about a topic is hard-coded — a study is a YAML file.
+
+```bash
+pip install -r requirements.txt
+cp studies/example.yaml studies/my_study.yaml     # edit name, subreddits, queries
+python main.py --mode search --study studies/my_study.yaml --dry-run   # prints the request plan, no requests
+python main.py --mode search --study studies/my_study.yaml             # collect posts
+python main.py --collect-comments --study studies/my_study.yaml        # after comment_settle_hours (default 72h)
+python main.py --apply-flags --filter --report --study studies/my_study.yaml
+```
+
+Stream mode (walk one subreddit chronologically, same output):
+
+```bash
+python main.py --mode stream --subreddit replika --date-from "90 days ago" --limit 2000
+python main.py --collect-comments --subreddit replika
+```
+
+Output per study, in `data/<name>/`:
+
+| File | What |
+|---|---|
+| `posts_comments.csv` | the web app's 44-column combined schema, unchanged, plus `study`, `query`, `source`, `sort`, `collected_at`, `flags` |
+| `run_log.jsonl` | one line per request: timestamp, source, subreddit, query, sort, page, results, HTTP status |
+| `report.json` | unique posts per subreddit per query, posts per source, share of complete comment trees, flag counts |
+| `study.yaml` + `study.sha256` | the config that produced the data, so the run can be repeated |
+| `study.sqlite`, `.salt` | local only (gitignored): the store, and the salt + author mapping for pseudonymisation |
+
+A post found by several queries or sources appears once; `query`, `source` and `sort` list everything that found it, `;`-separated.
+
+### Study config keys
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | required | output folder `data/<name>/` |
+| `subreddits` | required | list; `all` allowed only with `reddit_search` |
+| `queries` | required | one search each. Quoted phrases work on both sources; `a OR b` is split into two Arctic Shift searches |
+| `exclude_terms` | `[]` | `--filter` drops posts whose title+body contain any (whole word, case-insensitive) |
+| `date_from`, `date_to` | `null` | ISO date, or `30 days ago`; null = full history |
+| `sources` | `[arctic_shift]` | `arctic_shift` (full archive, no credentials) and/or `reddit_search` (needs `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`; each listing ≈250 results, so every query runs per sort) |
+| `sorts` | `[relevance, new, top]` | `reddit_search` only |
+| `comment_mode` | `settled` | `settled`: comments fetched by `--collect-comments` once a post is older than `comment_settle_hours`; `immediate`: at discovery; `none` |
+| `comment_settle_hours` | `72` | |
+| `comment_source` | `arctic_shift` | `arctic_shift` returns the flat complete tree; `reddit_search` fetches the live tree and expands every collapsed `more` node |
+| `min_score`, `min_comments` | `null` | applied by `--filter` |
+| `flags` | `[]` | `name`, regex `pattern`, optional `near` regex that must occur within `window` characters, `scope: posts|comments|both`; `--apply-flags` writes matching names to `flags` |
+| `anonymise_authors` | `true` | authors exported as SHA-256(salt + name); salt and mapping stay in `data/<name>/` |
+
+`post_comments_complete` is `true` when the tree was walked to its end **and** at least 95% of Reddit's `num_comments` was collected. Reddit's counter undercounts the archive (see above), so an upper bound is deliberately not applied. Every step rewrites the CSV from the SQLite store, so `--apply-flags` and `--filter` can be rerun at will; `--filter` marks posts excluded rather than deleting them.
+
 ## Built by
 
 [Jonas Heller](https://jonasheller.info) — Assistant Professor of Marketing, Maastricht University.

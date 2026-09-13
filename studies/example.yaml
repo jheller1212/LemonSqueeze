@@ -1,0 +1,40 @@
+# LemonSqueeze study config — copy this file, rename it, and edit the first
+# three keys. Every other key has a default and can be deleted.
+#
+# Run:   python main.py --mode search --study studies/example.yaml
+# Then:  python main.py --collect-comments --study studies/example.yaml
+#        python main.py --apply-flags --study studies/example.yaml
+#        python main.py --filter --study studies/example.yaml
+#        python main.py --report --study studies/example.yaml
+# Plan only, no requests:  add --dry-run to the search command.
+
+name: example_study            # output folder: data/example_study/
+subreddits: [subA, subB]       # or [all] for site-wide (reddit_search only)
+queries:                       # each entry is one search; Reddit search syntax allowed
+  - '"exact phrase"'
+  - 'term1 term2'
+  - 'term OR otherterm'
+
+exclude_terms: []              # drop posts whose title+body contain any of these words
+date_from: null                # ISO date (2025-01-01) or null for full history
+date_to: null
+
+sources: [arctic_shift]        # full history, no credentials. Add reddit_search (needs
+                               # REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET env vars) for Reddit's own ranking.
+sorts: [relevance, new, top]   # reddit_search only; each sort returns a different ~250-post slice
+
+comment_mode: settled          # settled | immediate | none
+comment_settle_hours: 72       # settled: fetch comment trees only once posts are this old
+comment_source: arctic_shift   # arctic_shift (flat, complete) | reddit_search (live tree + morechildren)
+
+min_score: null                # applied by --filter, after collection
+min_comments: null
+
+flags:                         # regex flags, written to the `flags` column by --apply-flags
+  - name: first_person_partner
+    pattern: 'my (husband|wife|partner|boyfriend|girlfriend)'
+    near: '(AI|chatbot|ChatGPT)'   # optional: must also occur within `window` chars
+    window: 200
+    scope: posts               # posts | comments | both
+
+anonymise_authors: true        # export SHA-256(salt + name); salt and mapping stay in data/<name>/
