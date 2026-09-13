@@ -28,6 +28,10 @@ class Source:
         source reported no more data (as opposed to stopping on an error)."""
         raise NotImplementedError
 
+    def page_before(self, subreddit, moment, date_from, limit=25):
+        """One page of posts created just before `moment` (recall sampling)."""
+        raise NotImplementedError
+
     def plan(self, subreddit, query, date_from, date_to, sort):
         """Human-readable request plan for --dry-run."""
         return "%s: r/%s query=%r sort=%s window=%s..%s" % (

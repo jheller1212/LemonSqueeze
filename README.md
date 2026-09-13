@@ -130,6 +130,25 @@ A post found by several queries or sources appears once; `query`, `source` and `
 | `flags` | `[]` | `name`, regex `pattern`, optional `near` regex that must occur within `window` characters, `scope: posts|comments|both`; `--apply-flags` writes matching names to `flags` |
 | `anonymise_authors` | `true` | authors exported as SHA-256(salt + name); salt and mapping stay in `data/<name>/` |
 
+### For the paper
+
+```bash
+python main.py --study studies/my_study.yaml --recall-sample 100   # random posts WITHOUT keywords -> recall_sample.csv
+#   code the `relevant` column (1/0) by hand, then:
+python main.py --study studies/my_study.yaml --recall-score        # recall + precision of the keyword list, 95% CI
+python main.py --study studies/my_study.yaml --methods             # a methods paragraph with the study's real numbers
+```
+
+Every column is defined in [DATA_DICTIONARY.md](DATA_DICTIONARY.md), with its caveats. Keyword search is literal matching (no stemming, no relevance ranking), so report the recall check: it is the only evidence that the keyword list captured the phenomenon.
+
+### Tests
+
+```bash
+pip install pytest && python -m pytest -q
+```
+
+CI runs the suite on Python 3.9 and 3.12 and syntax-checks the web app on every push. The suite covers the archive cursor logic (boundary seconds, one-second pages), the completeness rule, depth reconstruction, filters, flags, pseudonymisation, recall scoring, and the web/CLI column parity.
+
 `post_comments_complete` is `true` when the tree was walked to its end **and** at least 95% of Reddit's `num_comments` was collected. Reddit's counter undercounts the archive (see above), so an upper bound is deliberately not applied. Every step rewrites the CSV from the SQLite store, so `--apply-flags` and `--filter` can be rerun at will; `--filter` marks posts excluded rather than deleting them.
 
 ## Built by

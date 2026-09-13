@@ -109,6 +109,19 @@ class ArcticShift(Source):
             nxt = last + 1
             before = last if nxt == before else nxt
 
+    def page_before(self, subreddit, moment, date_from, limit=25):
+        """One page of posts created just before `moment` (recall sampling)."""
+        params = {"subreddit": subreddit, "limit": limit, "sort": "desc", "before": moment + 1}
+        if date_from:
+            params["after"] = date_from - 1
+        batch = self._get("/posts/search", params, subreddit=subreddit, query="recall_sample", sort="desc", page=1)
+        out = []
+        for raw in batch:
+            post = self.normalise_post(raw, self.name)
+            post["created_datetime"] = iso(post["created_utc"])
+            out.append(post)
+        return out
+
     # --- comments --------------------------------------------------------------
 
     def fetch_comments(self, post_id, num_comments):
