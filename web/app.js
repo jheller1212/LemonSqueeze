@@ -974,9 +974,20 @@ function renderDiscovery(data) {
     </tr>`;
   }).join("");
 
-  const keywords = data.keywords.map((k, i) => `
-    <label class="discover-keyword" title="${escapeHtml(k.why)}">
-      <input type="checkbox" class="disc-kw" data-i="${i}" checked /> <code>${escapeHtml(k.query)}</code>
+  // The archive has no OR: each alternative runs as its own search, so show it
+  // as its own chip — a bare word like "wife" is then visible and can be unticked.
+  const chips = [];
+  data.keywords.forEach((k, i) => {
+    for (const term of k.query.split(/\s+OR\s+/i)) {
+      const t = term.trim();
+      if (!t) continue;
+      const bare = !/"/.test(t) && t.split(/\s+/).length === 1;
+      chips.push({ i, term: t, why: k.why, bare });
+    }
+  });
+  const keywords = chips.map((c, j) => `
+    <label class="discover-keyword${c.bare ? " discover-keyword-bare" : ""}" title="${escapeHtml(c.why)}${c.bare ? " — single bare word: matches every post containing it" : ""}">
+      <input type="checkbox" class="disc-kw" data-term="${escapeHtml(c.term)}" ${c.bare ? "" : "checked"} /> <code>${escapeHtml(c.term)}</code>${c.bare ? " <span class=\"badge\">bare word</span>" : ""}
     </label>`).join("");
 
   discoverResults.innerHTML = `
@@ -985,7 +996,7 @@ function renderDiscovery(data) {
       <thead><tr><th></th><th>Community</th><th class="num">Members</th><th class="num">Archived posts</th><th class="num">Comments</th><th class="num">Since</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    <h3>Keyword queries — ${data.keywords.length} proposed (counts appear once you Analyze a community)</h3>
+    <h3>Keyword searches — ${chips.length} (each chip is one search; counts appear once you Analyze a community)</h3>
     <div class="discover-keywords">${keywords}</div>
     ${data.exclude_terms.length ? `<p class="limit-note">Suggested exclude terms for the CLI's --filter: ${data.exclude_terms.map(escapeHtml).join(", ")}</p>` : ""}
     ${data.caveats.length ? `<h3>Caveats to address in the methods</h3><ul class="discover-caveats">${data.caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>` : ""}
@@ -1022,7 +1033,7 @@ function renderDiscovery(data) {
 }
 
 function selectedKeywords() {
-  return Array.from(discoverResults.querySelectorAll(".disc-kw:checked")).map((el) => discovery.keywords[Number(el.dataset.i)].query);
+  return Array.from(discoverResults.querySelectorAll(".disc-kw:checked")).map((el) => el.dataset.term);
 }
 
 function selectedCommunities() {

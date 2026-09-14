@@ -18,7 +18,7 @@ const Suggestions = z.object({
     confidence: z.enum(["high", "medium", "low"]),
   })).max(12),
   keywords: z.array(z.object({
-    query: z.string().describe('archive syntax: plain words (all must occur), "quoted phrase", or a OR b'),
+    query: z.string().describe('archive syntax: plain words (all must occur) and/or "quoted phrases"; "a OR b" means two separate complete searches, so each side must stand alone'),
     why: z.string().describe("at most 15 words"),
   })).max(14),
   exclude_terms: z.array(z.string()).max(8).describe("words that mark obvious false positives; empty if none"),
@@ -29,7 +29,7 @@ const SYSTEM = `You help academic researchers build Reddit corpora from a public
 
 Given a study description, propose:
 1. Communities (exact subreddit names). Include the core communities where the phenomenon is discussed first-hand, adjacent communities where affected others talk about it (partners, family, professionals), and at most two contrast communities. Only name subreddits you are confident exist; mark confidence honestly. Never invent names.
-2. Keyword queries for full-text search of post titles and bodies. The archive matches literally: plain words must all occur, "quoted phrases" must occur verbatim, a OR b runs two searches. There is no stemming, so add common variants (e.g. plural, brand names, abbreviations). Prefer the words people actually use when writing about their own experience over academic terms. Between 8 and 14 queries.
+2. Keyword queries for full-text search of post titles and bodies. The archive matches literally: plain words must all occur, "quoted phrases" must occur verbatim. OR is NOT an operator in the archive: "a OR b" is simply run as two separate searches, "a" and "b". So each side of an OR must be a complete, specific query on its own — never write:  wife OR husband "talks to an AI"  (the archive would run the bare query: wife); write:  wife "talks to an AI" OR husband "talks to an AI"  — or two separate queries. Never let a single generic word stand alone as a query or as an OR alternative. There is no stemming, so add common variants (plural, brand names, abbreviations). Prefer the words people actually use when writing about their own experience over academic terms. Between 8 and 14 queries.
 3. Exclude terms that mark obvious false positives, if any.
 4. Caveats a methods section should mention for this study.
 
