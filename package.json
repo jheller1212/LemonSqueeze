@@ -1,6 +1,10 @@
 {
   "name": "lemonsqueeze",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Web-based Reddit scraper that exports posts and comments as CSV/JSON",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
+    "zod": "^4.6.5"
+  }
 }

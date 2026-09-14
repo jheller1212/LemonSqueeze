@@ -9,6 +9,9 @@
 [functions."scrape"]
   timeout = 26
 
+[functions."discover"]
+  timeout = 26
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"

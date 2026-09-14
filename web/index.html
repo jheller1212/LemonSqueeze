@@ -50,6 +50,23 @@
         </div>
       </div>
 
+      <!-- Study discovery: describe it, get verified communities + keywords -->
+      <details class="discover-card glass-card" id="discoverCard">
+        <summary class="discover-summary">
+          <span class="discover-title">Not sure which communities or keywords? Describe your study</span>
+          <span class="discover-hint">A language model proposes, the archive verifies every community, and you keep what you want.</span>
+        </summary>
+        <div class="discover-body">
+          <textarea id="studyDescription" rows="4" class="input-keywords" spellcheck="true"
+            placeholder="e.g. People in romantic relationships with AI companions (Replika, Character.AI, ChatGPT): how they describe the relationship, and how partners and family react. English-language, last two years."></textarea>
+          <div class="discover-actions">
+            <button type="button" class="btn-analyze" id="discoverBtn"><span class="btn-text">Suggest communities &amp; keywords</span></button>
+            <span class="limit-note">Suggestions are a starting point, not a sampling frame — check the counts before you commit.</span>
+          </div>
+          <div id="discoverResults" class="discover-results hidden"></div>
+        </div>
+      </details>
+
       <!-- Subreddit Input -->
       <div class="input-group">
         <div class="input-wrapper" title="Enter a subreddit name, or paste a full Reddit URL (subreddit or specific post)">
