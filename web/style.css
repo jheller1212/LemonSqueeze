@@ -1247,6 +1247,7 @@ footer {
 .discover-keywords { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .discover-keyword { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.6rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); font-size: 0.85rem; background: var(--bg-surface); }
 .discover-keyword code { font-family: var(--font); font-weight: 600; }
+.discover-keyword-bare { border-style: dashed; opacity: 0.85; }
 .discover-caveats { margin: 0; padding-left: 1.2rem; font-size: 0.85rem; color: var(--text-muted); }
 .discover-table-wrap { overflow-x: auto; }
 
