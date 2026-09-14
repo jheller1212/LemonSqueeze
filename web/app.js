@@ -371,6 +371,10 @@ analyzeBtn.addEventListener("click", async () => {
     } else {
       // Subreddit mode
       currentAnalysis = result;
+      if (pendingKeywords) {
+        document.getElementById("keywords").value = pendingKeywords.join("\n");
+        pendingKeywords = null;
+      }
       showAnalysis(result);
       // Reveal options panel (progressive disclosure)
       optionsPanel.classList.remove("hidden");
@@ -912,6 +916,146 @@ document.getElementById("discardBtn").addEventListener("click", () => {
 });
 
 checkForSavedProgress();
+
+// --- Study discovery: plain-text description -> verified communities + keywords ---
+let pendingKeywords = null;
+let discovery = null;
+
+const discoverBtn = document.getElementById("discoverBtn");
+const discoverResults = document.getElementById("discoverResults");
+
+discoverBtn.addEventListener("click", async () => {
+  const description = document.getElementById("studyDescription").value.trim();
+  if (description.length < 20) {
+    showError("Describe the study in at least a sentence: the phenomenon, who talks about it, and any time or language limits.");
+    return;
+  }
+  errorSection.classList.add("hidden");
+  discoverBtn.disabled = true;
+  discoverBtn.querySelector(".btn-text").textContent = "Thinking… (10–20 s)";
+  try {
+    const resp = await fetch("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `Server error (${resp.status})`);
+    discovery = data;
+    renderDiscovery(data);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    discoverBtn.disabled = false;
+    discoverBtn.querySelector(".btn-text").textContent = "Suggest communities & keywords";
+  }
+});
+
+function fmtCount(n) {
+  if (!n) return "0";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return Math.round(n / 1e3) + "k";
+  return n.toLocaleString();
+}
+
+function renderDiscovery(data) {
+  const verified = data.communities.filter((c) => c.exists);
+  const missing = data.communities.filter((c) => !c.exists);
+  const rows = data.communities.map((c, i) => {
+    const since = c.earliest_post ? new Date(c.earliest_post * 1000).getFullYear() : "";
+    return `<tr class="${c.exists ? "" : "missing"}">
+      <td><input type="checkbox" class="disc-sub" data-i="${i}" ${c.exists && c.archived_posts > 0 ? "checked" : "disabled"} /></td>
+      <td><strong>r/${escapeHtml(c.name)}</strong>${c.over18 ? ' <span class="badge">NSFW</span>' : ""}<br><span class="estimate-label" style="text-transform:none">${escapeHtml(c.role)} · ${escapeHtml(c.why)}</span></td>
+      <td class="num">${c.exists ? fmtCount(c.subscribers) : "—"}</td>
+      <td class="num">${c.exists ? fmtCount(c.archived_posts) : "not in archive"}</td>
+      <td class="num">${c.exists ? fmtCount(c.archived_comments) : ""}</td>
+      <td class="num">${since}</td>
+      <td>${c.exists ? `<button type="button" class="link-button disc-analyze" data-name="${escapeHtml(c.name)}">Analyze</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+
+  const keywords = data.keywords.map((k, i) => `
+    <label class="discover-keyword" title="${escapeHtml(k.why)}">
+      <input type="checkbox" class="disc-kw" data-i="${i}" checked /> <code>${escapeHtml(k.query)}</code>
+    </label>`).join("");
+
+  discoverResults.innerHTML = `
+    <h3>Communities — ${verified.length} verified in the archive${missing.length ? `, ${missing.length} suggested but not found` : ""}</h3>
+    <div class="discover-table-wrap"><table class="discover-table">
+      <thead><tr><th></th><th>Community</th><th class="num">Members</th><th class="num">Archived posts</th><th class="num">Comments</th><th class="num">Since</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <h3>Keyword queries — ${data.keywords.length} proposed (counts appear once you Analyze a community)</h3>
+    <div class="discover-keywords">${keywords}</div>
+    ${data.exclude_terms.length ? `<p class="limit-note">Suggested exclude terms for the CLI's --filter: ${data.exclude_terms.map(escapeHtml).join(", ")}</p>` : ""}
+    ${data.caveats.length ? `<h3>Caveats to address in the methods</h3><ul class="discover-caveats">${data.caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>` : ""}
+    <div class="discover-actions">
+      <button type="button" class="btn-analyze" id="discUseBtn"><span class="btn-text">Use selected keywords here</span></button>
+      <button type="button" class="btn-analyze" id="discYamlBtn"><span class="btn-text">Download study file for the CLI</span></button>
+      <span class="limit-note">The web app collects one community at a time; the study file runs all selected ones.</span>
+    </div>
+  `;
+  discoverResults.classList.remove("hidden");
+
+  discoverResults.querySelectorAll(".disc-analyze").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pendingKeywords = selectedKeywords();
+      document.getElementById("subreddit").value = btn.dataset.name;
+      analyzeBtn.click();
+      document.getElementById("subreddit").scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+  document.getElementById("discUseBtn").addEventListener("click", () => {
+    const kws = selectedKeywords();
+    if (optionsPanel.classList.contains("hidden")) {
+      pendingKeywords = kws;
+      showError("Keywords saved — now Analyze a community (click Analyze in the table) and they will be filled in.");
+    } else {
+      document.getElementById("keywords").value = kws.join("\n");
+      updateCollectionEstimate();
+      optionsPanel.scrollIntoView({ behavior: "smooth" });
+    }
+  });
+  document.getElementById("discYamlBtn").addEventListener("click", () => {
+    downloadFile(buildStudyYaml(data, selectedCommunities(), selectedKeywords()), "study.yaml", "text/yaml");
+  });
+}
+
+function selectedKeywords() {
+  return Array.from(discoverResults.querySelectorAll(".disc-kw:checked")).map((el) => discovery.keywords[Number(el.dataset.i)].query);
+}
+
+function selectedCommunities() {
+  return Array.from(discoverResults.querySelectorAll(".disc-sub:checked")).map((el) => discovery.communities[Number(el.dataset.i)].name);
+}
+
+function yamlQuote(s) {
+  return "'" + String(s).replace(/'/g, "''") + "'";
+}
+
+// A study file the command-line tool runs as-is; the description travels with it.
+function buildStudyYaml(data, subs, keywords) {
+  const lines = [
+    "# Generated by LemonSqueeze study discovery on " + new Date().toISOString().slice(0, 10),
+    "# Suggestions came from " + data.model + "; communities below were verified in the archive.",
+    "# Description:",
+    ...data.description.split(/\r?\n/).map((l) => "#   " + l),
+    "",
+    "name: my_study",
+    "subreddits: [" + subs.join(", ") + "]",
+    "queries:",
+    ...keywords.map((q) => "  - " + yamlQuote(q)),
+    "exclude_terms: [" + data.exclude_terms.map(yamlQuote).join(", ") + "]",
+    "date_from: null            # e.g. 2024-01-01 or '2 years ago'",
+    "date_to: null",
+    "sources: [arctic_shift]",
+    "comment_mode: settled",
+    "comment_settle_hours: 72",
+    "anonymise_authors: true",
+    "",
+  ];
+  return lines.join("\n");
+}
 
 // --- Results display ---
 function showResults(data) {

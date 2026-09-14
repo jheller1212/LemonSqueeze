@@ -1228,6 +1228,28 @@ footer {
 
 .input-keywords:focus { outline: none; border-color: var(--lemon); }
 
+.discover-card { margin-bottom: 1.25rem; padding: 0; overflow: hidden; }
+.discover-summary { list-style: none; cursor: pointer; padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.discover-summary::-webkit-details-marker { display: none; }
+.discover-summary::before { content: "▸ "; color: var(--lemon); }
+.discover-card[open] .discover-summary::before { content: "▾ "; }
+.discover-title { font-weight: 600; color: var(--text); display: inline; }
+.discover-hint { font-size: 0.8rem; color: var(--text-muted); }
+.discover-body { padding: 0 1.25rem 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.discover-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.discover-results { display: flex; flex-direction: column; gap: 1rem; }
+.discover-results h3 { margin: 0.25rem 0 0; font-size: 0.95rem; }
+.discover-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.discover-table th, .discover-table td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--glass-border); vertical-align: top; }
+.discover-table th { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.discover-table .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.discover-table tr.missing { opacity: 0.55; }
+.discover-keywords { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.discover-keyword { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.6rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); font-size: 0.85rem; background: var(--bg-surface); }
+.discover-keyword code { font-family: var(--font); font-weight: 600; }
+.discover-caveats { margin: 0; padding-left: 1.2rem; font-size: 0.85rem; color: var(--text-muted); }
+.discover-table-wrap { overflow-x: auto; }
+
 .time-filter-note, .limit-note {
   font-size: 0.72rem;
   color: var(--text-dim);
