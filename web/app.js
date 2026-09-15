@@ -334,11 +334,36 @@ function showError(msg) {
   errorText.textContent = msg;
 }
 
+// A subreddit name is 2-21 letters/digits/underscores (optionally r/ or a
+// reddit.com URL). Anything else — spaces, a sentence, a question — is a topic,
+// and belongs in study discovery, which suggests communities to scrape.
+function looksLikeSubreddit(text) {
+  if (/reddit\.com\//i.test(text)) return true;
+  return /^(\/?r\/)?[A-Za-z0-9_]{2,21}\/?$/.test(text);
+}
+
+function runDiscoveryFor(text) {
+  const card = document.getElementById("discoverCard");
+  card.open = true;
+  document.getElementById("studyDescription").value = text;
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+  discoverBtn.click();
+}
+
 // --- Analyze flow ---
 analyzeBtn.addEventListener("click", async () => {
   const subredditInput = document.getElementById("subreddit").value.trim();
   if (!subredditInput) {
-    showError("Please enter a subreddit name or URL.");
+    showError("Enter a subreddit name or reddit.com URL — or describe your topic in a sentence and I will suggest communities.");
+    return;
+  }
+  if (!looksLikeSubreddit(subredditInput)) {
+    errorSection.classList.add("hidden");
+    if (subredditInput.length < 20) {
+      showError(`"${subredditInput}" is not a subreddit name. Describe the topic in a full sentence (what, who, where) and I will suggest communities to scrape.`);
+      return;
+    }
+    runDiscoveryFor(subredditInput);
     return;
   }
 
@@ -380,7 +405,10 @@ analyzeBtn.addEventListener("click", async () => {
       optionsPanel.classList.remove("hidden");
     }
   } catch (err) {
-    showError(err.message);
+    const msg = /not found or has no archived posts/.test(err.message)
+      ? err.message + " If you meant a topic rather than a community name, describe it in a sentence and use “Describe your study” to get communities suggested."
+      : err.message;
+    showError(msg);
   } finally {
     progressSection.classList.add("hidden");
     analyzeBtn.disabled = false;
