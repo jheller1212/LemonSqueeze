@@ -38,16 +38,13 @@
         <p class="hero-subtitle">Collect posts, comments, and metadata into structured CSV and JSON datasets. Built for academic research.</p>
       </div>
 
-      <!-- Resume Banner (shown when there's saved progress) -->
-      <div id="resumeBanner" class="resume-banner glass-card hidden">
-        <div class="resume-info">
-          <strong>Unfinished squeeze found</strong>
-          <p id="resumeDetails"></p>
+      <!-- Your runs: every collection is saved in this browser as it happens -->
+      <div id="resumeBanner" class="runs-panel glass-card hidden">
+        <div class="runs-header">
+          <strong>Your runs</strong>
+          <span class="runs-note" id="runsNote">Saved in this browser as they happen — resume an unfinished run, or download a finished one again.</span>
         </div>
-        <div class="resume-actions">
-          <button class="btn-resume" id="resumeBtn">Resume</button>
-          <button class="btn-discard" id="discardBtn">Discard</button>
-        </div>
+        <div id="runsList" class="runs-list"></div>
       </div>
 
       <!-- Study discovery: describe it, get verified communities + keywords -->
@@ -215,6 +212,7 @@
       <div id="progress" class="progress-card glass-card hidden">
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <p id="statusText">Starting...</p>
+        <p class="progress-hint">Saved after every batch. Keep this tab visible — browsers slow background tabs down; if anything goes wrong, Resume continues where it stopped.</p>
       </div>
 
       <!-- Error -->
@@ -229,6 +227,7 @@
           <p id="resultsSubtitle" class="results-subtitle">Your dataset is ready. Download in the format that fits your workflow.</p>
         </div>
 
+        <div id="runStatus" class="run-status"></div>
         <div id="summary" class="stats-grid"></div>
 
         <div class="download-bar">
@@ -248,6 +247,10 @@
             <button class="btn-download" id="downloadCommentsCsv" title="One row per comment with post context.">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Comments CSV
+            </button>
+            <button class="btn-download" id="downloadManifest" title="Run report: scope, time window, chunks, counts, status, incomplete-comment posts. Keep it with the data.">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Run report (JSON)
             </button>
             <button class="btn-download" id="downloadJson" title="Nested JSON with all data. Best for scripting.">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -273,6 +276,7 @@
     </footer>
   </div>
 
+  <script src="runs.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
