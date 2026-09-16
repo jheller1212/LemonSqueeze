@@ -51,7 +51,6 @@ let threadData = null; // for single-thread scraping
 
 // --- Sort pill toggles + time filter logic ---
 const sortPills = document.querySelectorAll("#sortPills .pill");
-const timeFilterBlock = document.getElementById("timeFilterBlock");
 const timeFilterSelect = document.getElementById("timeFilter");
 const timeFilterNote = document.getElementById("timeFilterNote");
 
@@ -60,9 +59,6 @@ const dateFromInput = document.getElementById("dateFrom");
 const dateToInput = document.getElementById("dateTo");
 
 function updateTimeFilterState() {
-  // Time range applies to all sorts now (archive-based)
-  timeFilterSelect.disabled = false;
-  timeFilterBlock.classList.remove("disabled");
   timeFilterNote.textContent = "";
 
   // Show/hide custom date inputs
@@ -477,11 +473,65 @@ function showAnalysis(analysis) {
   `;
 
   analysisCard.classList.remove("hidden");
+  applyScope();
+}
+
+// --- Scope: whole community | time frame | number of posts ---
+// The scope drives the underlying inputs (#timeFilter, #limit, sort pills),
+// which remain the single source of truth for the collection run.
+const MAX_POSTS_PER_SORT = 100000;
+let lastRangePreset = "year";
+
+function getScope() {
+  const checked = document.querySelector('input[name="scope"]:checked');
+  return checked ? checked.value : "range";
+}
+
+function applyScope() {
+  const scope = getScope();
+  const tf = document.getElementById("timeFilter");
+  if (scope === "range") {
+    if (tf.value === "all") tf.value = lastRangePreset;
+    lastRangePreset = tf.value;
+  } else {
+    if (tf.value !== "all") lastRangePreset = tf.value;
+    tf.value = "all";
+  }
+  if (scope !== "count") {
+    // every post exactly once: New is the only sort that does that
+    sortPills.forEach((p) => p.classList.toggle("active", p.dataset.value === "new"));
+  }
+  updateTimeFilterState();
   updateCollectionEstimate();
 }
 
-// --- Live collection estimate (updates when settings change) ---
-const MAX_POSTS_PER_SORT = 100000;
+document.querySelectorAll('input[name="scope"]').forEach((r) => r.addEventListener("change", applyScope));
+
+function fmtN(n) { return (n || 0).toLocaleString(); }
+
+function scopeTime(posts) {
+  return formatDuration(estimateTime(posts, document.getElementById("includeComments").checked));
+}
+
+// Fill the three cards; the archive totals are known immediately, the rest arrive with counts.
+function refreshScopeCards() {
+  if (!currentAnalysis) return;
+  const a = currentAnalysis.archive || {};
+  const all = document.getElementById("scopeAllSummary");
+  const allRadio = document.getElementById("scopeAll");
+  if (a.posts > MAX_POSTS_PER_SORT) {
+    allRadio.disabled = true;
+    if (allRadio.checked) { document.getElementById("scopeRange").checked = true; }
+    all.innerHTML = `<strong>${fmtN(a.posts)}</strong> posts · ${fmtN(a.comments)} comments — more than one run can hold; use time frames (one run each)`;
+  } else {
+    allRadio.disabled = false;
+    all.innerHTML = `<strong>${fmtN(a.posts)}</strong> posts · ${fmtN(a.comments)} comments · ${scopeTime(a.posts)}`;
+  }
+  const limit = parseInt(document.getElementById("limit").value, 10) || 500;
+  const passes = Math.max(parseKeywords().length, 1);
+  document.getElementById("scopeCountSummary").innerHTML =
+    `<strong>${fmtN(Math.min(limit * passes, a.posts || limit * passes))}</strong> posts${passes > 1 ? " (limit per keyword)" : ""} · ${scopeTime(Math.min(limit * passes, a.posts || limit * passes))}`;
+}
 
 // One search per line (or comma); "a OR b" becomes two passes because the
 // archive's full-text search has no OR. Quoted phrases pass through.
@@ -554,29 +604,23 @@ function updateCollectionEstimate() {
   const el = document.getElementById("collectionEstimate");
   if (!el) return;
 
+  refreshScopeCards();
+  const scope = getScope();
   const selectedSorts = Array.from(document.querySelectorAll("#sortPills .pill.active"));
   const sortCount = Math.max(selectedSorts.length, 1);
-  const limit = parseInt(document.getElementById("limit").value, 10) || 50;
-  const includeComments = document.getElementById("includeComments").checked;
+  const limit = parseInt(document.getElementById("limit").value, 10) || 500;
   const passes = Math.max(parseKeywords().length, 1);
-  const totalPosts = Math.min(limit * sortCount * passes, currentAnalysis.estimatedTotalUnique);
-  const etaSeconds = estimateTime(totalPosts, includeComments);
+  const scopeLabel = scope === "all" ? "the whole community" : scope === "range" ? "this time frame" : "the newest slice";
 
-  el.innerHTML = `
-    <div class="estimate-bar">
-      <div class="estimate-item">
-        <span class="estimate-number">${totalPosts.toLocaleString()}</span>
-        <span class="estimate-label">posts to collect</span>
-      </div>
-      <div class="estimate-divider"></div>
-      <div class="estimate-item">
-        <span class="estimate-number">${formatDuration(etaSeconds)}</span>
-        <span class="estimate-label">estimated time${includeComments ? " (with comments)" : ""}</span>
-      </div>
-    </div>
-    <p class="estimate-range" id="estimateRange">Counting posts in this time range…</p>
-    <p class="estimate-hint">Progress is saved automatically — you can close this tab and resume later.</p>
-  `;
+  if (scope === "count") {
+    const totalPosts = Math.min(limit * sortCount * passes, currentAnalysis.estimatedTotalUnique);
+    renderEstimateBar(totalPosts, null, scopeLabel);
+    const range = document.getElementById("estimateRange");
+    if (range) range.textContent = passes > 1 ? `${limit.toLocaleString()} newest matches per keyword, ${sortCount} sort mode${sortCount > 1 ? "s" : ""}.` : `${limit.toLocaleString()} newest posts${sortCount > 1 ? ` per sort mode (${sortCount})` : ""}.`;
+    return;
+  }
+
+  renderEstimateBar(null, null, scopeLabel);
 
   const seq = ++countRequestSeq;
   countSelectedWindow()
@@ -591,12 +635,49 @@ function updateCollectionEstimate() {
     });
 }
 
+// The prominent summary above the Squeeze button. null = still counting.
+function renderEstimateBar(posts, comments, scopeLabel) {
+  const el = document.getElementById("collectionEstimate");
+  const includeComments = document.getElementById("includeComments").checked;
+  const known = posts !== null;
+  el.innerHTML = `
+    <div class="estimate-bar">
+      <div class="estimate-item">
+        <span class="estimate-number">${known ? posts.toLocaleString() : "…"}</span>
+        <span class="estimate-label">${scopeLabel === "the newest slice" ? "newest posts to collect" : "posts in " + scopeLabel}</span>
+      </div>
+      ${comments !== null && comments !== undefined ? `<div class="estimate-divider"></div>
+      <div class="estimate-item">
+        <span class="estimate-number">${comments.toLocaleString()}</span>
+        <span class="estimate-label">comments (Reddit's count)</span>
+      </div>` : ""}
+      <div class="estimate-divider"></div>
+      <div class="estimate-item">
+        <span class="estimate-number">${known ? formatDuration(estimateTime(posts, includeComments)) : "…"}</span>
+        <span class="estimate-label">estimated time${includeComments ? " (with comments)" : ""}</span>
+      </div>
+    </div>
+    <p class="estimate-range" id="estimateRange">${known ? "" : "Counting…"}</p>
+    <p class="estimate-hint">Progress is saved automatically — you can close this tab and resume later.</p>
+  `;
+}
+
 function renderRangeCount(count) {
   const range = document.getElementById("estimateRange");
   if (!range) return;
   if (!count) {
     range.textContent = "Pick a start date to count posts in a custom range.";
     return;
+  }
+  // Whole-community and time-frame scopes collect everything counted: set the
+  // limit for the run and show the figures prominently.
+  const scope = getScope();
+  if (scope !== "count") {
+    const perPass = count.perKeyword ? Math.max(...count.perKeyword.map((p) => p.posts)) : count.posts;
+    document.getElementById("limit").value = String(Math.max(1, Math.min(perPass, MAX_POSTS_PER_SORT)));
+    renderEstimateBar(count.posts, count.comments, scope === "all" ? "the whole community" : "this time frame");
+    const summary = document.getElementById(scope === "all" ? "scopeAllSummary" : "scopeRangeSummary");
+    if (summary) summary.innerHTML = `<strong>${(count.exact ? "" : "≈ ") + fmtN(count.posts)}</strong> posts · ${(count.exact ? "" : "≈ ") + fmtN(count.comments)} comments · ${scopeTime(count.posts)}`;
   }
   const approx = count.exact ? "" : "≈ ";
   let qualifier = count.all
@@ -614,37 +695,20 @@ function renderRangeCount(count) {
     ? " Comment count is low for posts under ~36 hours old."
     : "";
   const n = count.posts;
-  const canTakeAll = n > 0 && n <= MAX_POSTS_PER_SORT;
+  const tooMany = n > MAX_POSTS_PER_SORT;
   range.innerHTML = `
-    <strong>${approx}${n.toLocaleString()} posts</strong> · ${approx}${count.comments.toLocaleString()} comments ${qualifier}.${recent}
-    ${canTakeAll
-      ? `<button type="button" class="link-button" id="collectAllBtn">Collect all ${n.toLocaleString()} ${count.keywords ? "matching " : ""}posts</button>`
-      : n > MAX_POSTS_PER_SORT
-        ? `<span class="estimate-warn">More than ${MAX_POSTS_PER_SORT.toLocaleString()} — choose a narrower time range to collect everything, one range per run.</span>`
-        : ""}
+    ${approx}${n.toLocaleString()} posts · ${approx}${count.comments.toLocaleString()} comments ${qualifier}.${recent}
+    ${tooMany ? `<span class="estimate-warn">More than ${MAX_POSTS_PER_SORT.toLocaleString()} — one run cannot hold this; split it into narrower time frames, one run each.</span>` : ""}
+    ${count.perKeyword ? `<span class="estimate-warn">Limit set to the largest keyword's count per pass, so every match is collected.</span>` : ""}
   `;
-  const btn = document.getElementById("collectAllBtn");
-  if (btn) {
-    btn.addEventListener("click", () => {
-      // "All" means every post in the window: New already yields each one once,
-      // the other sorts would only re-select from the same set.
-      const perPass = count.perKeyword ? Math.max(...count.perKeyword.map((p) => p.posts)) : n;
-      document.getElementById("limit").value = String(perPass);
-      sortPills.forEach((p) => p.classList.toggle("active", p.dataset.value === "new"));
-      const note = document.getElementById("keywordsNote");
-      if (note && count.perKeyword) {
-        note.textContent = `Limit set to ${perPass.toLocaleString()} per keyword — enough to collect every one of the ${n.toLocaleString()} matches.`;
-      }
-      updateCollectionEstimate();
-      const limitInput = document.getElementById("limit");
-      limitInput.focus();
-      limitInput.blur();
-    });
-  }
+  if (tooMany) scrapeBtn.disabled = true; else scrapeBtn.disabled = false;
 }
 
 // Wire settings changes to update the estimate live
-document.getElementById("limit").addEventListener("input", updateCollectionEstimate);
+document.getElementById("limit").addEventListener("input", () => {
+  if (getScope() !== "count") document.getElementById("scopeCount").checked = true;
+  applyScope();
+});
 document.getElementById("includeComments").addEventListener("change", updateCollectionEstimate);
 sortPills.forEach((pill) => pill.addEventListener("click", () => setTimeout(updateCollectionEstimate, 0)));
 timeFilterSelect.addEventListener("change", updateCollectionEstimate);
@@ -699,7 +763,7 @@ async function startScrape(isResume) {
       return;
     }
 
-    limit = parseInt(document.getElementById("limit").value, 10) || 50;
+    limit = parseInt(document.getElementById("limit").value, 10) || 500;
     limit = Math.min(limit, MAX_POSTS_PER_SORT);
     includeComments = document.getElementById("includeComments").checked;
     includeSelftext = document.getElementById("includeSelftext").checked;

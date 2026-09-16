@@ -116,75 +116,58 @@
       <!-- Scrape Options (hidden until analysis done) -->
       <div id="optionsPanel" class="options-panel glass-card hidden">
         <div class="options-header">
-          <h2>Collection Settings</h2>
-          <p class="options-subtitle">Configure how data is collected. Hover over any option for more details.</p>
+          <h2>What to collect</h2>
+          <p class="options-subtitle">Pick a scope — the numbers and the time estimate update as you go.</p>
+        </div>
+
+        <div class="scope-cards" id="scopeCards">
+          <label class="scope-card" for="scopeAll">
+            <span class="scope-head"><input type="radio" name="scope" id="scopeAll" value="all" /> <strong>The whole community</strong></span>
+            <span class="scope-summary" id="scopeAllSummary">—</span>
+          </label>
+
+          <label class="scope-card" for="scopeRange">
+            <span class="scope-head"><input type="radio" name="scope" id="scopeRange" value="range" checked /> <strong>A time frame</strong></span>
+            <span class="scope-controls">
+              <span class="select-wrapper">
+                <select id="timeFilter" title="Time range for post collection">
+                  <option value="all" hidden>All time</option>
+                  <option value="year" selected>Past year</option>
+                  <option value="month">Past month</option>
+                  <option value="week">Past week</option>
+                  <option value="day">Today</option>
+                  <option value="custom">Custom range...</option>
+                </select>
+              </span>
+              <span id="customDateRange" class="custom-date-range hidden">
+                <span class="date-inputs">
+                  <label>From <input type="date" id="dateFrom" title="Start date (inclusive)" /></label>
+                  <label>To <input type="date" id="dateTo" title="End date (inclusive)" /></label>
+                </span>
+              </span>
+            </span>
+            <span class="scope-summary" id="scopeRangeSummary">—</span>
+            <span class="time-filter-note" id="timeFilterNote"></span>
+          </label>
+
+          <label class="scope-card" for="scopeCount">
+            <span class="scope-head"><input type="radio" name="scope" id="scopeCount" value="count" /> <strong>A number of posts</strong></span>
+            <span class="scope-controls">
+              the most recent <input type="number" id="limit" value="500" min="1" max="100000" class="input-small" title="Number of posts (1-100,000)" /> posts
+            </span>
+            <span class="scope-summary" id="scopeCountSummary">—</span>
+          </label>
         </div>
 
         <div class="options-grid">
-          <!-- Sort Modes -->
-          <div class="option-block">
-            <label class="option-label">
-              Sort by
-              <span class="info-tooltip" data-tooltip="Each mode fetches a separate batch. Selecting multiple modes with 50 posts/sort yields more unique posts. Duplicates across modes are automatically removed.">?</span>
-            </label>
-            <div class="pill-group" id="sortPills">
-              <button class="pill active" data-value="new" title="Most recently submitted posts">New</button>
-              <button class="pill active" data-value="top" title="Highest-scored posts (uses Time Filter)">Top</button>
-              <button class="pill" data-value="hot" title="Currently trending posts">Hot</button>
-              <button class="pill" data-value="controversial" title="Most polarizing posts — great for debate/conflict research">Controversial</button>
-              <button class="pill" data-value="rising" title="Posts gaining traction right now (limited to ~100)">Rising</button>
-            </div>
-          </div>
-
           <!-- Keywords -->
           <div class="option-block option-block-wide">
             <label class="option-label" for="keywords">
               Keywords (optional)
-              <span class="info-tooltip" data-tooltip="Leave empty to collect every post. Otherwise one search per line: plain words match anywhere in title or body, &quot;quotes&quot; match an exact phrase, OR separates alternatives. Each line is its own pass over the archive; posts found by several lines are kept once.">?</span>
+              <span class="info-tooltip" data-tooltip="Leave empty to collect every post in the scope. Otherwise one search per line: plain words match anywhere in title or body, &quot;quotes&quot; match an exact phrase, OR separates alternatives. Each line is its own pass over the archive; posts found by several lines are kept once.">?</span>
             </label>
             <textarea id="keywords" rows="3" class="input-keywords" placeholder='chatgpt&#10;"my ai"&#10;replika OR character.ai' spellcheck="false"></textarea>
-            <span class="limit-note" id="keywordsNote">Empty = every post in the time range. With keywords, results come newest first and the limit applies per keyword.</span>
-          </div>
-
-          <!-- Post Limit -->
-          <div class="option-block">
-            <label class="option-label" for="limit">
-              Posts per sort
-              <span class="info-tooltip" data-tooltip="How many posts to collect per sort mode. To take every post in the chosen time range, use the Collect all button below.">?</span>
-            </label>
-            <input type="number" id="limit" value="50" min="1" max="100000" class="input-small" title="Number of posts to fetch per sort mode (1-100,000)" />
-            <span class="limit-note">Up to 100,000 per sort mode — narrow the time range for more</span>
-          </div>
-
-          <!-- Time Filter -->
-          <div class="option-block" id="timeFilterBlock">
-            <label class="option-label">
-              Time range
-              <span class="info-tooltip" data-tooltip="Filter posts by date range. Use 'Custom range' to select exact start/end dates — ideal for building month-by-month or yearly datasets.">?</span>
-            </label>
-            <div class="select-wrapper">
-              <select id="timeFilter" title="Time range for post collection">
-                <option value="all" selected>All time</option>
-                <option value="year">Past year</option>
-                <option value="month">Past month</option>
-                <option value="week">Past week</option>
-                <option value="day">Today</option>
-                <option value="custom">Custom range...</option>
-              </select>
-            </div>
-            <div id="customDateRange" class="custom-date-range hidden">
-              <div class="date-inputs">
-                <label>
-                  From
-                  <input type="date" id="dateFrom" title="Start date (inclusive)" />
-                </label>
-                <label>
-                  To
-                  <input type="date" id="dateTo" title="End date (inclusive)" />
-                </label>
-              </div>
-            </div>
-            <span class="time-filter-note" id="timeFilterNote"></span>
+            <span class="limit-note" id="keywordsNote">Empty = every post in the scope. With keywords, only matching posts are collected, newest first.</span>
           </div>
         </div>
 
@@ -208,6 +191,23 @@
             <span class="toggle-text">Skip NSFW posts</span>
           </label>
         </div>
+
+        <details class="advanced-options">
+          <summary>Advanced: sort modes</summary>
+          <div class="option-block">
+            <label class="option-label">
+              Sort by
+              <span class="info-tooltip" data-tooltip="Only for 'A number of posts'. New = most recent. Top and Controversial rank by score or comment count within each fetched batch. Whole-community and time-frame scopes always use New, which yields every post exactly once.">?</span>
+            </label>
+            <div class="pill-group" id="sortPills">
+              <button class="pill active" data-value="new" title="Most recently submitted posts">New</button>
+              <button class="pill" data-value="top" title="Highest-scored posts within each batch">Top</button>
+              <button class="pill" data-value="hot" title="Last 7 days, ranked in-batch">Hot</button>
+              <button class="pill" data-value="controversial" title="Most-commented within each batch">Controversial</button>
+              <button class="pill" data-value="rising" title="Last 24 hours">Rising</button>
+            </div>
+          </div>
+        </details>
 
       </div>
 
