@@ -33,7 +33,7 @@ Times are UTC. Booleans are `True`/`False`. Empty means *not available from the 
 | `post_gilded` | integer | | Same |
 | `post_title_word_count` | integer | Whitespace tokens | |
 | `post_selftext_word_count` | integer | | |
-| `post_comments_complete` | bool or empty | `True`: the tree was walked to its end and ≥ 95 % of `post_num_comments` was collected. `False`: collection was interrupted (Stop, error). Empty: comments were not requested | A one-sided rule on purpose — see `post_num_comments` |
+| `post_comments_complete` | bool or empty | `True`: the tree was walked to its end and ≥ 95 % of `post_num_comments` was collected. `False` has two causes, separated in the run report: the walk was interrupted (Stop, error — Resume finishes it), or the archive was walked to the end but holds fewer comments than Reddit counted (comments removed before archiving — nothing more exists to fetch). Empty: comments were not requested | A one-sided rule on purpose — see `post_num_comments` |
 
 ## Comment columns (empty on `post_only` rows)
 

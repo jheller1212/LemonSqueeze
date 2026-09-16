@@ -133,6 +133,8 @@ function buildSummary(posts, keywordsEnabled) {
     total_comments: totalComments,
     total_score: totalScore,
     posts_with_incomplete_comments: posts.filter((p) => p.comments_complete === false).length,
+    posts_not_fully_fetched: posts.filter((p) => p.comments_complete === false && p.comments_walked !== true).length,
+    posts_archive_below_reddit_count: posts.filter((p) => p.comments_complete === false && p.comments_walked === true).length,
   };
 
   if (keywordsEnabled) {
@@ -173,6 +175,8 @@ function scopeText(plan) {
 
 function buildManifest(run, posts) {
   const incomplete = posts.filter((p) => p.comments_complete === false).map((p) => p.id);
+  const notFetched = posts.filter((p) => p.comments_complete === false && p.comments_walked !== true).map((p) => p.id);
+  const archiveShort = posts.filter((p) => p.comments_complete === false && p.comments_walked === true).map((p) => p.id);
   return {
     tool: "LemonSqueeze web app",
     run_id: run.id,
@@ -192,8 +196,13 @@ function buildManifest(run, posts) {
     skip_nsfw: run.settings.skipNSFW,
     sorts: Array.from(new Set(run.plan.queue.map((m) => m.sort))),
     chunks: run.chunks.map((c) => ({ index: c.i, from_utc: c.after === null ? null : new Date((c.after + 1) * 1000).toISOString(), to_utc: c.before === null ? null : new Date((c.before - 1) * 1000).toISOString(), status: c.status, posts: c.posts, error: c.error || undefined })),
-    counts: { posts: posts.length, comments: posts.reduce((n, p) => n + (p.comments?.length || 0), 0), posts_with_incomplete_comments: incomplete.length },
+    counts: { posts: posts.length, comments: posts.reduce((n, p) => n + (p.comments?.length || 0), 0), posts_with_incomplete_comments: incomplete.length, posts_reused_from_earlier_runs: posts.filter((p) => p.reused).length },
+    comment_method: run.direct ? "browser → archive: windowed sweep of all comments in the subreddit (+30-day settle margin) grouped by post, then per-post walks for any post below 95% of Reddit's count; keyword and newest-N scopes use per-post walks" : "server batches: per-post walks",
+    archive_requests_from_browser: run.direct ? Archive.stats.requests : 0,
     posts_with_incomplete_comments: incomplete,
+    posts_not_fully_fetched: notFetched,
+    posts_archive_below_reddit_count: archiveShort,
+    completeness_note: "post_comments_complete is true when the archive was walked to the end AND holds at least 95% of Reddit's num_comments. Posts listed under posts_archive_below_reddit_count were walked to the end; the archive simply holds fewer comments than Reddit counted (removed before archiving). Posts under posts_not_fully_fetched were interrupted; Resume finishes them.",
     started_at: new Date(run.createdAt).toISOString(),
     finished_at: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
     source: "Arctic Shift archive (https://arctic-shift.photon-reddit.com)",
@@ -233,7 +242,7 @@ async function renderRunsPanel() {
     row.querySelector(".run-open").addEventListener("click", () => openRun(id));
     row.querySelector(".run-csv").addEventListener("click", async () => {
       const run = await RunStore.getRun(id);
-      const posts = await RunStore.getPosts(id);
+      const posts = await storedPosts(id);
       downloadFile(combinedToCSV(posts, false), `reddit_${run.subreddit}_combined.csv`, "text/csv");
     });
     row.querySelector(".run-delete").addEventListener("click", async () => {
@@ -247,23 +256,23 @@ async function renderRunsPanel() {
 async function openRun(id) {
   const run = await RunStore.getRun(id);
   if (!run) return;
-  const posts = await RunStore.getPosts(id);
+  const posts = await storedPosts(id);
   currentRun = run;
   scrapeResult = { subreddit: run.subreddit, posts, keywordsEnabled: false, summary: buildSummary(posts, false), run };
   showResults(scrapeResult);
   resultsSection.scrollIntoView({ behavior: "smooth" });
 }
 
-function estimateTime(postCount, includeComments) {
-  if (includeComments) {
-    const batches = Math.ceil(postCount / 10);
-    const seconds = batches * 5;
-    return seconds;
-  } else {
-    const batches = Math.ceil(postCount / 100);
-    const seconds = batches * 2;
-    return seconds;
-  }
+// Direct archive path: posts 100 per request (~0.5 s), comments swept 100 per
+// request in 4 parallel shards (~0.15 s effective), plus a small per-post
+// share for top-ups. Without a comment count, assume ~12 comments per post.
+function estimateTime(postCount, includeComments, commentCount = null) {
+  const postSeconds = Math.ceil(postCount / 100) * 0.5;
+  if (!includeComments) return Math.max(1, Math.round(postSeconds));
+  const comments = commentCount != null ? commentCount * 1.08 : postCount * 12;
+  const sweepSeconds = Math.ceil(comments / 100) * 0.15;
+  const topupSeconds = postCount * 0.02;
+  return Math.max(2, Math.round(postSeconds + sweepSeconds + topupSeconds));
 }
 
 function formatDuration(seconds) {
@@ -626,8 +635,8 @@ document.querySelectorAll('input[name="scope"]').forEach((r) => r.addEventListen
 
 function fmtN(n) { return (n || 0).toLocaleString(); }
 
-function scopeTime(posts) {
-  return formatDuration(estimateTime(posts, document.getElementById("includeComments").checked));
+function scopeTime(posts, comments = null) {
+  return formatDuration(estimateTime(posts, document.getElementById("includeComments").checked, comments));
 }
 
 // Fill the three cards; the archive totals are known immediately, the rest arrive with counts.
@@ -642,7 +651,7 @@ function refreshScopeCards() {
     all.innerHTML = `<strong>${fmtN(a.posts)}</strong> posts · ${fmtN(a.comments)} comments — more than one run can hold; use time frames (one run each)`;
   } else {
     allRadio.disabled = false;
-    all.innerHTML = `<strong>${fmtN(a.posts)}</strong> posts · ${fmtN(a.comments)} comments · ${scopeTime(a.posts)}`;
+    all.innerHTML = `<strong>${fmtN(a.posts)}</strong> posts · ${fmtN(a.comments)} comments · ${scopeTime(a.posts, a.comments)}`;
   }
   const limit = parseInt(document.getElementById("limit").value, 10) || 500;
   const passes = Math.max(parseKeywords().length, 1);
@@ -757,6 +766,7 @@ function renderEstimateBar(posts, comments, scopeLabel) {
   const el = document.getElementById("collectionEstimate");
   const includeComments = document.getElementById("includeComments").checked;
   const known = posts !== null;
+  const eta = known ? formatDuration(estimateTime(posts, includeComments, comments)) : "…";
   el.innerHTML = `
     <div class="estimate-bar">
       <div class="estimate-item">
@@ -770,7 +780,7 @@ function renderEstimateBar(posts, comments, scopeLabel) {
       </div>` : ""}
       <div class="estimate-divider"></div>
       <div class="estimate-item">
-        <span class="estimate-number">${known ? formatDuration(estimateTime(posts, includeComments)) : "…"}</span>
+        <span class="estimate-number">${eta}</span>
         <span class="estimate-label">estimated time${includeComments ? " (with comments)" : ""}</span>
       </div>
     </div>
@@ -780,7 +790,7 @@ function renderEstimateBar(posts, comments, scopeLabel) {
   const label = scrapeBtn.querySelector(".btn-text");
   if (label) {
     label.textContent = known
-      ? `Squeeze ${posts.toLocaleString()} posts · ${formatDuration(estimateTime(posts, includeComments))}${includeComments ? " with comments" : ""}`
+      ? `Squeeze ${posts.toLocaleString()} posts · ${eta}${includeComments ? " with comments" : ""}`
       : "Squeeze Data (counting…)";
   }
 }
@@ -803,7 +813,7 @@ function renderRangeCount(count) {
     document.getElementById("limit").value = String(Math.max(1, Math.min(perPass, MAX_POSTS_PER_SORT)));
     renderEstimateBar(count.posts, count.comments, scope === "all" ? "the whole community" : "this time frame");
     const summary = document.getElementById(scope === "all" ? "scopeAllSummary" : "scopeRangeSummary");
-    if (summary) summary.innerHTML = `<strong>${(count.exact ? "" : "≈ ") + fmtN(count.posts)}</strong> posts · ${(count.exact ? "" : "≈ ") + fmtN(count.comments)} comments · ${scopeTime(count.posts)}`;
+    if (summary) summary.innerHTML = `<strong>${(count.exact ? "" : "≈ ") + fmtN(count.posts)}</strong> posts · ${(count.exact ? "" : "≈ ") + fmtN(count.comments)} comments · ${scopeTime(count.posts, count.comments)}`;
   }
   const approx = count.exact ? "" : "≈ ";
   let qualifier = count.all
@@ -850,6 +860,12 @@ dateToInput.addEventListener("change", updateCollectionEstimate);
 scrapeBtn.addEventListener("click", () => startScrape());
 
 let currentRun = null;
+
+// Posts as stored, without the store's own bookkeeping fields.
+async function storedPosts(runId) {
+  const posts = await RunStore.getPosts(runId);
+  return posts.map(({ runId: _r, seq: _s, comments_offloaded: _o, comments_counted: _c, ...post }) => post);
+}
 
 // Chunk bounds are sent to the archive as `after`/`before`, which are EXCLUSIVE
 // on both ends. Edges e_0..e_n partition the window; chunk k fetches
@@ -909,6 +925,7 @@ async function planRunFromUI() {
   // size the chunks from the count (wait for it if it is still running) and
   // let every chunk walk to exhaustion rather than stop at the limit box.
   let expected = null;
+  let expectedComments = null;
   if (scope !== "count") {
     let count = lastCount;
     if (!count) {
@@ -917,6 +934,7 @@ async function planRunFromUI() {
       try { count = await countSelectedWindow(); } catch { count = null; }
     }
     expected = count ? count.posts : null;
+    expectedComments = count ? count.comments : null;
     limit = MAX_POSTS_PER_SORT;
   }
   return {
@@ -926,7 +944,7 @@ async function planRunFromUI() {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     settings: { limit, includeComments, includeSelftext, skipNSFW, keywords },
-    plan: { scope, window, limit, queue, expectedPosts: expected },
+    plan: { scope, window, limit, queue, expectedPosts: expected, expectedComments },
     chunks: makeChunks(window, expected),
     progress: { chunkIdx: 0, modeIdx: 0, after: null, modeFetched: 0, seq: 0 },
     counts: { posts: 0, comments: 0 },
@@ -941,6 +959,7 @@ async function startScrape(opts = {}) {
     run = await RunStore.getRun(resumeId);
     if (!run) { showError("That run is no longer in this browser."); return; }
     allPosts = await RunStore.getPosts(resumeId);
+    for (const p of allPosts) if (p.comments_complete !== undefined) p.comments_counted = true;
     // failed chunks get another go on resume
     for (const c of run.chunks) if (c.status === "failed") { c.status = "pending"; c.error = ""; }
     run.status = "running";
@@ -968,11 +987,25 @@ async function startScrape(opts = {}) {
   updateProgress(resumeId ? `Resuming… (${allPosts.length.toLocaleString()} posts already collected)` : "Starting squeeze…");
   await RunStore.saveRun(run);
 
+  // Comment trees are written to IndexedDB and then dropped from memory, so the
+  // tab's RAM stays bounded however large the run; exports re-read the store.
+  let commentTotal = allPosts.reduce((n, p) => n + (p.comments?.length || 0), 0);
+  const offload = (post) => {
+    if (post.comments_offloaded) return;
+    post.comments_offloaded = true;
+    post.comments = [];
+  };
+  for (const p of allPosts) if (p.comments_complete === true) offload(p);
+
   const persistPosts = async (posts) => {
     if (!posts.length) return;
     await RunStore.putPosts(run.id, posts, run.progress.seq);
     run.progress.seq += posts.filter((p) => p.seq === undefined).length;
-    run.counts = { posts: allPosts.length, comments: allPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
+    for (const p of posts) {
+      if (p.comments_complete !== undefined && !p.comments_offloaded && !p.comments_counted) { commentTotal += p.comments?.length || 0; p.comments_counted = true; }
+      if (p.comments_complete !== undefined) offload(p);
+    }
+    run.counts = { ...run.counts, posts: allPosts.length, comments: commentTotal };
     await RunStore.saveRun(run);
   };
 
@@ -1033,6 +1066,126 @@ async function startScrape(opts = {}) {
     }
   };
 
+  // ---- Direct path: the browser pages the archive itself ----
+  const signal = abortController.signal;
+  const sweepable = plan.scope !== "count" && !plan.queue.some((m) => m.query);
+  const nowTs = Math.floor(Date.now() / 1000);
+  let reuse = new Map();
+  if (includeComments && !resumeId) {
+    try { reuse = await RunStore.reusablePosts(subreddit, nowTs - Archive.SETTLE_SECONDS, plan.window); } catch { reuse = new Map(); }
+  }
+  run.counts.reused = run.counts.reused || 0;
+
+  const finishPost = (post, comments, walked) => {
+    const unique = []; const seen = new Set();
+    for (const c of comments) if (c.id && !seen.has(c.id)) { seen.add(c.id); delete c.link; unique.push(c); }
+    assignDepths(unique);
+    post.comments = unique;
+    // complete = the archive was walked to the end AND it holds at least 95% of
+    // Reddit's count. `comments_walked` separates "we stopped short" from "the
+    // archive has less than Reddit reports" (comments deleted before archiving).
+    post.comments_walked = walked;
+    post.comments_complete = walked && (post.num_comments <= 0 || unique.length >= 0.95 * post.num_comments);
+  };
+
+  const runChunkDirect = async (c) => {
+    const p = run.progress;
+    // Stage 1: posts, newest first, cursor persisted per page
+    for (let modeIdx = p.modeIdx; modeIdx < plan.queue.length; modeIdx++) {
+      const mode = plan.queue[modeIdx];
+      let cursor = modeIdx === p.modeIdx ? p.after : null;
+      let modeFetched = modeIdx === p.modeIdx ? p.modeFetched : 0;
+      let windowAfter = c.after, windowBefore = cursor ?? c.before;
+      if (mode.sort === "hot") windowAfter = Math.max(windowAfter ?? 0, nowTs - 7 * 86400);
+      if (mode.sort === "rising") windowAfter = Math.max(windowAfter ?? 0, nowTs - 86400);
+      const collected = [];
+      for await (const page of Archive.walkPostsDesc(subreddit, { after: windowAfter, before: windowBefore, query: mode.query || "", signal })) {
+        progressLine(c, mode);
+        let fresh = [];
+        for (const post of page.posts) {
+          if (mode.query) {
+            const existing = byId.get(post.id);
+            if (existing && existing.query && !existing.query.split(";").includes(mode.query)) existing.query += ";" + mode.query;
+            post.query = mode.query;
+          }
+          if (seenIds.has(post.id)) continue;
+          if (skipNSFW && post.over_18) continue;
+          if (!includeSelftext) post.selftext = "";
+          const prior = includeComments ? reuse.get(post.id) : null;
+          if (prior) { post.comments = prior.comments; post.comments_complete = true; post.reused = true; run.counts.reused++; }
+          seenIds.add(post.id); byId.set(post.id, post); allPosts.push(post); fresh.push(post); collected.push(post); modeFetched++; c.posts++;
+          if (modeFetched >= limit) break;
+        }
+        run.progress = { ...run.progress, chunkIdx: c.i, modeIdx, after: page.cursor, modeFetched };
+        await persistPosts(fresh);
+        if (page.done || modeFetched >= limit) break;
+      }
+      if ((mode.sort === "top" || mode.sort === "controversial") && plan.scope === "count") {
+        const key = mode.sort === "top" ? "score" : "num_comments";
+        collected.sort((x, y) => (y[key] || 0) - (x[key] || 0));
+      }
+      run.progress = { ...run.progress, modeIdx: modeIdx + 1, after: null, modeFetched: 0 };
+    }
+
+    if (!includeComments) return;
+
+    // Stage 2: comments for this chunk's posts that do not have a complete tree yet
+    const inChunk = (post) => c.after == null || (post.created_utc > c.after && post.created_utc < c.before);
+    const pending = allPosts.filter((post) => inChunk(post) && post.comments_complete !== true);
+    const pendingById = new Map(pending.map((post) => [post.id, post]));
+    const collectedComments = new Map(); // post id → comments[]
+    let sweptComments = 0;
+    const tick = (extra) => {
+      const pct = Math.min(99, (allPosts.length / Math.max(expectedTotal, 1)) * 100);
+      updateProgress(`${chunkLabel(c)}comments: ${extra}`, pct);
+    };
+
+    if (sweepable && pending.length > 0) {
+      // 2a. one sweep of the chunk's window plus the settle margin, in parallel shards
+      const sweepBefore = Math.min(nowTs + 1, c.before + Archive.SETTLE_SECONDS + 1);
+      let pages = 0;
+      await Archive.shardedSweep(subreddit, { after: c.after, before: sweepBefore, shards: 4, signal, onPage: async (comments) => {
+        pages++;
+        for (const cm of comments) {
+          if (!pendingById.has(cm.link)) continue;
+          if (!collectedComments.has(cm.link)) collectedComments.set(cm.link, []);
+          collectedComments.get(cm.link).push(cm);
+          sweptComments++;
+        }
+        if (pages % 5 === 0) tick(`sweeping the archive — ${sweptComments.toLocaleString()} comments for ${collectedComments.size.toLocaleString()} of ${pending.length.toLocaleString()} posts`);
+      } });
+      for (const post of pending) finishPost(post, collectedComments.get(post.id) || [], true);
+    }
+
+    if (sweepable) {
+      const settled = pending.filter((post) => post.comments_complete === true);
+      for (let i = 0; i < settled.length; i += 200) await persistPosts(settled.slice(i, i + 200));
+    }
+
+    // 2b. per-post walks: everything the sweep did not settle (or all, for keyword/count scopes).
+    // Posts with num_comments 0 and nothing swept are complete by definition.
+    const topups = pending.filter((post) => post.comments_complete !== true && (post.num_comments || 0) > 0);
+    for (const post of pending) if (post.comments_complete !== true && (post.num_comments || 0) === 0) finishPost(post, post.comments || [], true);
+    let done = 0;
+    let batch = [];
+    const flush = async () => { const b = batch; batch = []; await persistPosts(b); };
+    try {
+      await Archive.mapConcurrent(topups, 8, async (post) => {
+        const { comments, done: walked } = await Archive.threadComments(post.id, { signal });
+        finishPost(post, comments, walked);
+        done++;
+        batch.push(post);
+        if (batch.length >= 25) await flush();
+        if (done % 10 === 0 || done === topups.length) tick(`${sweepable ? "completing" : "fetching"} threads — ${done.toLocaleString()} of ${topups.length.toLocaleString()}`);
+      });
+    } finally {
+      await flush(); // whatever finished is kept, even if a straggler failed
+    }
+    const rest = pending.filter((post) => !post.comments_offloaded && post.comments_complete !== undefined);
+    for (let i = 0; i < rest.length; i += 200) await persistPosts(rest.slice(i, i + 200));
+    run.direct = true;
+  };
+
   let outcome = "complete";
   try {
     // A Stop can land mid-thread; finish those before fetching anything new.
@@ -1049,7 +1202,15 @@ async function startScrape(opts = {}) {
       let attempt = 0;
       while (true) {
         try {
-          await runChunk(c);
+          if (Archive.isAvailable()) {
+            try { await runChunkDirect(c); }
+            catch (err) {
+              if (err.name === "ArchiveUnavailable") { run.progress = { ...run.progress, modeIdx: 0, after: null, modeFetched: 0 }; await runChunk(c); }
+              else throw err;
+            }
+          } else {
+            await runChunk(c);
+          }
           c.status = "done";
           c.error = "";
           break;
@@ -1078,25 +1239,27 @@ async function startScrape(opts = {}) {
 
     run.status = outcome;
     run.finishedAt = Date.now();
-    run.counts = { posts: allPosts.length, comments: allPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
-    run.manifest = buildManifest(run, allPosts);
+    const finalPosts = await storedPosts(run.id);
+    run.counts = { ...run.counts, posts: finalPosts.length, comments: finalPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
+    run.manifest = buildManifest(run, finalPosts);
     await RunStore.saveRun(run);
     updateProgress(outcome === "complete" ? "Done — every chunk finished." : "Done with gaps — some chunks failed; see the run status below.", 100);
-    scrapeResult = { subreddit, posts: allPosts, keywordsEnabled: false, summary: buildSummary(allPosts, false), run };
+    scrapeResult = { subreddit, posts: finalPosts, keywordsEnabled: false, summary: buildSummary(finalPosts, false), run };
     showResults(scrapeResult);
     // The file is what the researcher must not lose: hand it over without asking.
-    if (allPosts.length > 0) {
-      downloadFile(combinedToCSV(allPosts, false), `reddit_${subreddit}_combined.csv`, "text/csv");
+    if (finalPosts.length > 0) {
+      downloadFile(combinedToCSV(finalPosts, false), `reddit_${subreddit}_combined.csv`, "text/csv");
     }
   } catch (err) {
     const stopped = err.name === "AbortError";
     run.status = stopped ? "stopped" : "failed";
-    run.counts = { posts: allPosts.length, comments: allPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
-    run.manifest = buildManifest(run, allPosts);
+    const partial = await storedPosts(run.id);
+    run.counts = { ...run.counts, posts: partial.length, comments: partial.reduce((n, p) => n + (p.comments?.length || 0), 0) };
+    run.manifest = buildManifest(run, partial);
     await RunStore.saveRun(run);
     if (!stopped) showError(err.message);
-    if (allPosts.length > 0) {
-      scrapeResult = { subreddit, posts: allPosts, keywordsEnabled: false, summary: buildSummary(allPosts, false), run };
+    if (partial.length > 0) {
+      scrapeResult = { subreddit, posts: partial, keywordsEnabled: false, summary: buildSummary(partial, false), run };
       updateProgress(`${stopped ? "Stopped" : "Failed"} at ${allPosts.length.toLocaleString()} posts — saved; Resume continues from here.`, (allPosts.length / Math.max(expectedTotal, 1)) * 100);
       showResults(scrapeResult);
     } else {
@@ -1287,8 +1450,11 @@ function showResults(data) {
     <div class="stat-card"><div class="value">${s.total_comments.toLocaleString()}</div><div class="label">Comments</div></div>
     <div class="stat-card"><div class="value">${s.total_score.toLocaleString()}</div><div class="label">Total score</div></div>
   `;
-  if (s.posts_with_incomplete_comments) {
-    statsHtml += `<div class="stat-card"><div class="value">${s.posts_with_incomplete_comments}</div><div class="label">Posts with incomplete comments</div></div>`;
+  if (s.posts_not_fully_fetched) {
+    statsHtml += `<div class="stat-card"><div class="value">${s.posts_not_fully_fetched}</div><div class="label">Threads not fully fetched (resume to finish)</div></div>`;
+  }
+  if (s.posts_archive_below_reddit_count) {
+    statsHtml += `<div class="stat-card"><div class="value">${s.posts_archive_below_reddit_count}</div><div class="label">Threads where the archive holds &lt;95% of Reddit's count (nothing more to fetch)</div></div>`;
   }
   if (s.posts_with_keyword_matches !== undefined) {
     statsHtml += `<div class="stat-card"><div class="value">${s.posts_with_keyword_matches}</div><div class="label">Keyword matches</div></div>`;
