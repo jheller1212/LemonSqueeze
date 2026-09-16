@@ -385,10 +385,74 @@ function showError(msg) {
 // A subreddit name is 2-21 letters/digits/underscores (optionally r/ or a
 // reddit.com URL). Anything else — spaces, a sentence, a question — is a topic,
 // and belongs in study discovery, which suggests communities to scrape.
-function looksLikeSubreddit(text) {
-  if (/reddit\.com\//i.test(text)) return true;
-  return /^(\/?r\/)?[A-Za-z0-9_]{2,21}\/?$/.test(text);
+// Mirrors parseRedditInput on the server: thread links in any shape people
+// paste, community names with or without r/, or a topic sentence.
+function classifyInput(text) {
+  const t = text.trim().replace(/^https?:\/\//i, "").replace(/^(www|old|new|m|np)\./i, "");
+  if (/^(?:reddit\.com)?\/?r\/[A-Za-z0-9_]+\/comments\/[a-z0-9]+/i.test(t)) return "thread";
+  if (/^redd\.it\/[a-z0-9]+/i.test(t) || /^reddit\.com\/comments\/[a-z0-9]+/i.test(t)) return "thread";
+  if (/^(?:reddit\.com)?\/?r\/[A-Za-z0-9_]+\/?(?:[?#].*)?$/i.test(t)) return "subreddit";
+  if (/^[A-Za-z0-9_]{2,21}$/.test(t)) return "subreddit";
+  if (/reddit\.com|redd\.it/i.test(t)) return "unknown_link";
+  return t.length >= 20 ? "topic" : "short";
 }
+
+function looksLikeSubreddit(text) {
+  const kind = classifyInput(text);
+  return kind === "thread" || kind === "subreddit" || kind === "unknown_link";
+}
+
+// Live check under the search bar: one archive request, debounced, as you type.
+const inputCheck = document.getElementById("inputCheck");
+let inputCheckTimer = null;
+let inputCheckSeq = 0;
+
+function fmtCompact(n) {
+  if (!n) return "0";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return Math.round(n / 1e3) + "k";
+  return n.toLocaleString();
+}
+
+async function liveCheckInput() {
+  const text = document.getElementById("subreddit").value.trim();
+  const seq = ++inputCheckSeq;
+  if (!text) { inputCheck.textContent = ""; inputCheck.className = "input-check"; return; }
+  const kind = classifyInput(text);
+  if (kind === "topic") { inputCheck.textContent = "Looks like a topic — press Analyze and I will suggest communities to scrape."; inputCheck.className = "input-check neutral"; return; }
+  if (kind === "short") { inputCheck.textContent = ""; inputCheck.className = "input-check"; return; }
+  if (kind === "unknown_link") { inputCheck.textContent = "That is a Reddit link, but not a thread or community I can read — paste the post's URL (…/r/<sub>/comments/<id>/…) or a community."; inputCheck.className = "input-check bad"; return; }
+  inputCheck.textContent = "Checking the archive…";
+  inputCheck.className = "input-check neutral";
+  try {
+    const r = await apiCall({ action: "peek", input: text }, 1);
+    if (seq !== inputCheckSeq) return;
+    if (r.type === "thread") {
+      if (!r.found) { inputCheck.textContent = `Thread ${r.postId} is not in the archive — check the link, or it may be very new.`; inputCheck.className = "input-check bad"; return; }
+      inputCheck.textContent = `✓ Thread found: “${r.title.slice(0, 80)}${r.title.length > 80 ? "…" : ""}” — r/${r.subreddit}, ${(r.num_comments || 0).toLocaleString()} comments (Reddit's count), ${new Date(r.created_utc * 1000).toLocaleDateString()}. Press Analyze to collect it.`;
+      inputCheck.className = "input-check ok";
+    } else if (r.type === "subreddit") {
+      if (!r.found) { inputCheck.textContent = `r/${r.name} is not in the archive — check the spelling.`; inputCheck.className = "input-check bad"; return; }
+      inputCheck.textContent = `✓ r/${r.name} — ${fmtCompact(r.subscribers)} members, ${fmtCompact(r.archived_posts)} archived posts${r.over18 ? ", NSFW" : ""}. Press Analyze.`;
+      inputCheck.className = "input-check ok";
+    } else {
+      inputCheck.textContent = "";
+      inputCheck.className = "input-check";
+    }
+  } catch (err) {
+    if (seq !== inputCheckSeq) return;
+    inputCheck.textContent = "";
+    inputCheck.className = "input-check";
+  }
+}
+
+document.getElementById("subreddit").addEventListener("input", () => {
+  clearTimeout(inputCheckTimer);
+  inputCheckTimer = setTimeout(liveCheckInput, 500);
+});
+document.getElementById("subreddit").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); analyzeBtn.click(); }
+});
 
 function runDiscoveryFor(text) {
   const card = document.getElementById("discoverCard");
@@ -1046,6 +1110,157 @@ stopBtn.addEventListener("click", () => {
 });
 
 renderRunsPanel();
+
+// --- Study discovery: plain-text description -> verified communities + keywords ---
+let pendingKeywords = null;
+let discovery = null;
+
+const discoverBtn = document.getElementById("discoverBtn");
+const discoverResults = document.getElementById("discoverResults");
+
+discoverBtn.addEventListener("click", async () => {
+  const description = document.getElementById("studyDescription").value.trim();
+  if (description.length < 20) {
+    showError("Describe the study in at least a sentence: the phenomenon, who talks about it, and any time or language limits.");
+    return;
+  }
+  errorSection.classList.add("hidden");
+  discoverBtn.disabled = true;
+  discoverBtn.querySelector(".btn-text").textContent = "Thinking… (10–20 s)";
+  try {
+    const resp = await fetch("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `Server error (${resp.status})`);
+    discovery = data;
+    renderDiscovery(data);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    discoverBtn.disabled = false;
+    discoverBtn.querySelector(".btn-text").textContent = "Suggest communities & keywords";
+  }
+});
+
+function fmtCount(n) {
+  if (!n) return "0";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return Math.round(n / 1e3) + "k";
+  return n.toLocaleString();
+}
+
+function renderDiscovery(data) {
+  const verified = data.communities.filter((c) => c.exists);
+  const missing = data.communities.filter((c) => !c.exists);
+  const rows = data.communities.map((c, i) => {
+    const since = c.earliest_post ? new Date(c.earliest_post * 1000).getFullYear() : "";
+    return `<tr class="${c.exists ? "" : "missing"}">
+      <td><input type="checkbox" class="disc-sub" data-i="${i}" ${c.exists && c.archived_posts > 0 ? "checked" : "disabled"} /></td>
+      <td><strong>r/${escapeHtml(c.name)}</strong>${c.over18 ? ' <span class="badge">NSFW</span>' : ""}<br><span class="estimate-label" style="text-transform:none">${escapeHtml(c.role)} · ${escapeHtml(c.why)}</span></td>
+      <td class="num">${c.exists ? fmtCount(c.subscribers) : "—"}</td>
+      <td class="num">${c.exists ? fmtCount(c.archived_posts) : "not in archive"}</td>
+      <td class="num">${c.exists ? fmtCount(c.archived_comments) : ""}</td>
+      <td class="num">${since}</td>
+      <td>${c.exists ? `<button type="button" class="link-button disc-analyze" data-name="${escapeHtml(c.name)}">Analyze</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+
+  // The archive has no OR: each alternative runs as its own search, so show it
+  // as its own chip — a bare word like "wife" is then visible and can be unticked.
+  const chips = [];
+  data.keywords.forEach((k, i) => {
+    for (const term of k.query.split(/\s+OR\s+/i)) {
+      const t = term.trim();
+      if (!t) continue;
+      const bare = !/"/.test(t) && t.split(/\s+/).length === 1;
+      chips.push({ i, term: t, why: k.why, bare });
+    }
+  });
+  const keywords = chips.map((c, j) => `
+    <label class="discover-keyword${c.bare ? " discover-keyword-bare" : ""}" title="${escapeHtml(c.why)}${c.bare ? " — single bare word: matches every post containing it" : ""}">
+      <input type="checkbox" class="disc-kw" data-term="${escapeHtml(c.term)}" ${c.bare ? "" : "checked"} /> <code>${escapeHtml(c.term)}</code>${c.bare ? " <span class=\"badge\">bare word</span>" : ""}
+    </label>`).join("");
+
+  discoverResults.innerHTML = `
+    <h3>Communities — ${verified.length} verified in the archive${missing.length ? `, ${missing.length} suggested but not found` : ""}</h3>
+    <div class="discover-table-wrap"><table class="discover-table">
+      <thead><tr><th></th><th>Community</th><th class="num">Members</th><th class="num">Archived posts</th><th class="num">Comments</th><th class="num">Since</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <h3>Keyword searches — ${chips.length} (each chip is one search; counts appear once you Analyze a community)</h3>
+    <div class="discover-keywords">${keywords}</div>
+    ${data.exclude_terms.length ? `<p class="limit-note">Suggested exclude terms for the CLI's --filter: ${data.exclude_terms.map(escapeHtml).join(", ")}</p>` : ""}
+    ${data.caveats.length ? `<h3>Caveats to address in the methods</h3><ul class="discover-caveats">${data.caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>` : ""}
+    <div class="discover-actions">
+      <button type="button" class="btn-analyze" id="discUseBtn"><span class="btn-text">Use selected keywords here</span></button>
+      <button type="button" class="btn-analyze" id="discYamlBtn"><span class="btn-text">Download study file for the CLI</span></button>
+      <span class="limit-note">The web app collects one community at a time; the study file runs all selected ones.</span>
+    </div>
+  `;
+  discoverResults.classList.remove("hidden");
+
+  discoverResults.querySelectorAll(".disc-analyze").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pendingKeywords = selectedKeywords();
+      document.getElementById("subreddit").value = btn.dataset.name;
+      analyzeBtn.click();
+      document.getElementById("subreddit").scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+  document.getElementById("discUseBtn").addEventListener("click", () => {
+    const kws = selectedKeywords();
+    if (optionsPanel.classList.contains("hidden")) {
+      pendingKeywords = kws;
+      showError("Keywords saved — now Analyze a community (click Analyze in the table) and they will be filled in.");
+    } else {
+      document.getElementById("keywords").value = kws.join("\n");
+      updateCollectionEstimate();
+      optionsPanel.scrollIntoView({ behavior: "smooth" });
+    }
+  });
+  document.getElementById("discYamlBtn").addEventListener("click", () => {
+    downloadFile(buildStudyYaml(data, selectedCommunities(), selectedKeywords()), "study.yaml", "text/yaml");
+  });
+}
+
+function selectedKeywords() {
+  return Array.from(discoverResults.querySelectorAll(".disc-kw:checked")).map((el) => el.dataset.term);
+}
+
+function selectedCommunities() {
+  return Array.from(discoverResults.querySelectorAll(".disc-sub:checked")).map((el) => discovery.communities[Number(el.dataset.i)].name);
+}
+
+function yamlQuote(s) {
+  return "'" + String(s).replace(/'/g, "''") + "'";
+}
+
+// A study file the command-line tool runs as-is; the description travels with it.
+function buildStudyYaml(data, subs, keywords) {
+  const lines = [
+    "# Generated by LemonSqueeze study discovery on " + new Date().toISOString().slice(0, 10),
+    "# Suggestions came from " + data.model + "; communities below were verified in the archive.",
+    "# Description:",
+    ...data.description.split(/\r?\n/).map((l) => "#   " + l),
+    "",
+    "name: my_study",
+    "subreddits: [" + subs.join(", ") + "]",
+    "queries:",
+    ...keywords.map((q) => "  - " + yamlQuote(q)),
+    "exclude_terms: [" + data.exclude_terms.map(yamlQuote).join(", ") + "]",
+    "date_from: null            # e.g. 2024-01-01 or '2 years ago'",
+    "date_to: null",
+    "sources: [arctic_shift]",
+    "comment_mode: settled",
+    "comment_settle_hours: 72",
+    "anonymise_authors: true",
+    "",
+  ];
+  return lines.join("\n");
+}
 
 // --- Results display ---
 function showResults(data) {

@@ -89,6 +89,7 @@ function mapPost(raw) {
     score_as_of: scoreAsOf(raw),
     upvote_ratio: raw.upvote_ratio || 0,
     num_comments: raw.num_comments || 0,
+    subreddit: raw.subreddit || "",
     url: raw.url || "",
     permalink: permalink.startsWith("http") ? permalink : `https://reddit.com${permalink}`,
     link_flair_text: raw.link_flair_text || "",
@@ -574,17 +575,21 @@ async function scrapeThread(subreddit, postId) {
 
 // --- URL parsing ---
 
+// Accepts what people actually paste: full URLs (www/old/new/m, with or
+// without https), redd.it short links, bare "r/sub/comments/id/..." paths,
+// "r/sub", "/r/sub", or a plain name.
 function parseRedditInput(input) {
-  const trimmed = (input || "").trim();
+  const t = (input || "").trim().replace(/^https?:\/\//i, "").replace(/^(www|old|new|m|np)\./i, "");
 
-  const threadMatch = trimmed.match(/reddit\.com\/r\/([^/?\s]+)\/comments\/([^/?\s]+)/);
-  if (threadMatch) return { type: "thread", subreddit: threadMatch[1], postId: threadMatch[2] };
-
-  const subMatch = trimmed.match(/reddit\.com\/r\/([^/?\s]+)/);
-  if (subMatch) return { type: "subreddit", subreddit: subMatch[1] };
-
-  const plain = trimmed.replace(/^r\//, "");
-  if (plain) return { type: "subreddit", subreddit: plain };
+  let m = t.match(/^(?:reddit\.com)?\/?r\/([A-Za-z0-9_]+)\/comments\/([a-z0-9]+)/i);
+  if (m) return { type: "thread", subreddit: m[1], postId: m[2].toLowerCase() };
+  m = t.match(/^redd\.it\/([a-z0-9]+)/i);
+  if (m) return { type: "thread", subreddit: "", postId: m[1].toLowerCase() };
+  m = t.match(/^reddit\.com\/comments\/([a-z0-9]+)/i);
+  if (m) return { type: "thread", subreddit: "", postId: m[1].toLowerCase() };
+  m = t.match(/^(?:reddit\.com)?\/?r\/([A-Za-z0-9_]+)\/?(?:[?#].*)?$/i);
+  if (m) return { type: "subreddit", subreddit: m[1] };
+  if (/^[A-Za-z0-9_]{2,50}$/.test(t)) return { type: "subreddit", subreddit: t };
 
   return { type: "invalid" };
 }
@@ -622,7 +627,7 @@ export async function handler(event) {
         return {
           statusCode: 200,
           headers,
-          body: JSON.stringify({ type: "thread", subreddit: parsed.subreddit, post }),
+          body: JSON.stringify({ type: "thread", subreddit: parsed.subreddit || post.subreddit || "", post }),
         };
       }
 
@@ -632,6 +637,32 @@ export async function handler(event) {
 
       const analysis = await analyzeSubreddit(parsed.subreddit);
       return { statusCode: 200, headers, body: JSON.stringify({ type: "subreddit", ...analysis }) };
+    }
+
+    // --- Peek: is this a real thread / community? One archive request, no comments ---
+    if (body.action === "peek") {
+      const parsed = parseRedditInput(body.input);
+      if (parsed.type === "thread") {
+        let raw = null;
+        try { raw = await arcticGetPostById(parsed.postId); } catch { raw = null; }
+        if (!raw) return { statusCode: 200, headers, body: JSON.stringify({ type: "thread", found: false, postId: parsed.postId }) };
+        return {
+          statusCode: 200, headers,
+          body: JSON.stringify({ type: "thread", found: true, postId: parsed.postId, subreddit: raw.subreddit || parsed.subreddit || "",
+            title: raw.title || "", num_comments: raw.num_comments || 0, created_utc: raw.created_utc || 0, author: raw.author || "" }),
+        };
+      }
+      if (parsed.type === "subreddit") {
+        let sub = null;
+        try { sub = await arcticGetSubreddit(parsed.subreddit); } catch { sub = null; }
+        if (!sub) return { statusCode: 200, headers, body: JSON.stringify({ type: "subreddit", found: false, name: parsed.subreddit }) };
+        return {
+          statusCode: 200, headers,
+          body: JSON.stringify({ type: "subreddit", found: true, name: sub.display_name || parsed.subreddit,
+            subscribers: sub.subscribers || 0, archived_posts: sub._meta?.num_posts || 0, over18: !!(sub.over18 || sub.over_18) }),
+        };
+      }
+      return { statusCode: 200, headers, body: JSON.stringify({ type: "invalid" }) };
     }
 
     // --- Count posts in a window (exact when small, sampled estimate otherwise) ---
@@ -786,6 +817,8 @@ export async function handler(event) {
     };
   } catch (err) {
     const message = (err.message || "Unknown error").slice(0, 500);
-    return { statusCode: 500, headers, body: JSON.stringify({ error: message }) };
+    // "not found" is an answer, not an outage: 404 so the client does not retry it
+    const notFound = /not found|could not find/i.test(message);
+    return { statusCode: notFound ? 404 : 500, headers, body: JSON.stringify({ error: message }) };
   }
 }
