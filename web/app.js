@@ -149,59 +149,111 @@ function buildSummary(posts, keywordsEnabled) {
   return summary;
 }
 
-// --- Save/Resume system ---
-const STORAGE_KEY = "lemonsqueeze_progress";
+// --- Durable runs (IndexedDB via runs.js) ---
+// Every batch is written as it arrives; a run always ends with an explicit status.
+const CHUNK_TARGET_POSTS = 1000;   // split long scopes into time chunks of about this size
+const MAX_CHUNKS = 60;
+const CHUNK_ATTEMPTS = 3;
 
-const RESUME_SNAPSHOT_MAX_POSTS = 20000;
+function isoDay(ts) { return new Date(ts * 1000).toISOString().slice(0, 10); }
 
-function saveProgress(data) {
-  if (data.posts.length > RESUME_SNAPSHOT_MAX_POSTS) {
-    if (!saveProgress.warned) {
-      saveProgress.warned = true;
-      showError(`This run is past ${RESUME_SNAPSHOT_MAX_POSTS.toLocaleString()} posts, so progress is no longer saved for Resume. Keep this tab open until it finishes, then download.`);
-    }
-    return;
-  }
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      timestamp: Date.now(),
-      subreddit: data.subreddit,
-      posts: data.posts,
-      seenIds: Array.from(data.seenIds),
-      sortQueue: data.sortQueue,
-      currentSortIdx: data.currentSortIdx,
-      currentAfter: data.currentAfter,
-      currentModeFetched: data.currentModeFetched,
-      settings: data.settings,
-    }));
-  } catch {
-    if (!saveProgress.warned) {
-      saveProgress.warned = true;
-      showError("Browser storage is full, so progress can no longer be saved for Resume. Collection continues — download your data when it finishes rather than relying on Resume.");
-    }
-  }
+function statusLabel(status) {
+  return { complete: "complete", complete_with_gaps: "complete with gaps", stopped: "stopped", failed: "failed", running: "unfinished" }[status] || status;
+}
+function statusClass(status) {
+  return { complete: "complete", complete_with_gaps: "gaps", stopped: "stopped", failed: "failed", running: "running" }[status] || "stopped";
 }
 
-function loadProgress() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (Date.now() - data.timestamp > 24 * 60 * 60 * 1000) {
-      localStorage.removeItem(STORAGE_KEY);
-      return null;
-    }
-    return data;
-  } catch {
-    return null;
+function scopeText(plan) {
+  if (plan.scope === "count") return `${plan.limit.toLocaleString()} newest posts`;
+  const w = plan.window;
+  const range = w ? `${isoDay(w.after)} → ${isoDay(w.before)}` : "whole community";
+  return plan.scope === "all" ? `whole community (${range})` : range;
+}
+
+function buildManifest(run, posts) {
+  const incomplete = posts.filter((p) => p.comments_complete === false).map((p) => p.id);
+  return {
+    tool: "LemonSqueeze web app",
+    run_id: run.id,
+    subreddit: run.subreddit,
+    status: run.status,
+    status_meaning: {
+      complete: "every chunk finished",
+      complete_with_gaps: "some chunks failed after retries; their time spans are listed under chunks with status failed",
+      stopped: "stopped by the user; Resume continues from the saved cursor",
+      failed: "aborted by an error; Resume retries",
+    }[run.status],
+    scope: run.plan.scope,
+    window_utc: run.plan.window ? { from: new Date(run.plan.window.after * 1000).toISOString(), to: new Date(run.plan.window.before * 1000).toISOString() } : null,
+    keywords: run.settings.keywords || [],
+    include_comments: run.settings.includeComments,
+    include_selftext: run.settings.includeSelftext,
+    skip_nsfw: run.settings.skipNSFW,
+    sorts: Array.from(new Set(run.plan.queue.map((m) => m.sort))),
+    chunks: run.chunks.map((c) => ({ index: c.i, from_utc: c.after === null ? null : new Date((c.after + 1) * 1000).toISOString(), to_utc: c.before === null ? null : new Date((c.before - 1) * 1000).toISOString(), status: c.status, posts: c.posts, error: c.error || undefined })),
+    counts: { posts: posts.length, comments: posts.reduce((n, p) => n + (p.comments?.length || 0), 0), posts_with_incomplete_comments: incomplete.length },
+    posts_with_incomplete_comments: incomplete,
+    started_at: new Date(run.createdAt).toISOString(),
+    finished_at: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+    source: "Arctic Shift archive (https://arctic-shift.photon-reddit.com)",
+    note: "Reddit's num_comments undercounts the archive; scores are the archive's ~36h snapshot (score_as_of).",
+  };
+}
+
+// --- Your runs panel ---
+async function renderRunsPanel() {
+  let runs = [];
+  try { runs = await RunStore.listRuns(); } catch { runs = []; }
+  const panel = document.getElementById("resumeBanner");
+  const list = document.getElementById("runsList");
+  if (!runs.length) { panel.classList.add("hidden"); return; }
+  if (!RunStore.isPersistent()) {
+    document.getElementById("runsNote").textContent = "Browser storage is unavailable here (private window?), so runs are kept only until this tab closes.";
   }
+  list.innerHTML = runs.map((r) => {
+    const when = new Date(r.updatedAt).toLocaleString();
+    const canResume = r.status !== "complete";
+    return `<div class="run-row" data-id="${r.id}">
+      <span class="run-badge ${statusClass(r.status)}">${statusLabel(r.status)}</span>
+      <span class="run-title">r/${escapeHtml(r.subreddit)}</span>
+      <span class="run-meta">${escapeHtml(scopeText(r.plan))}${r.settings.keywords?.length ? ` · ${r.settings.keywords.length} keyword${r.settings.keywords.length > 1 ? "s" : ""}` : ""} · ${(r.counts?.posts || 0).toLocaleString()} posts${r.settings.includeComments ? ` · ${(r.counts?.comments || 0).toLocaleString()} comments` : ""} · ${when}</span>
+      <span class="run-actions">
+        ${canResume ? `<button type="button" class="link-button run-resume">${r.status === "complete_with_gaps" ? "Retry failed chunks" : "Resume"}</button>` : ""}
+        <button type="button" class="link-button run-open">Open</button>
+        <button type="button" class="link-button run-csv">Download CSV</button>
+        <button type="button" class="link-button run-delete">Delete</button>
+      </span>
+    </div>`;
+  }).join("");
+  panel.classList.remove("hidden");
+  list.querySelectorAll(".run-row").forEach((row) => {
+    const id = row.dataset.id;
+    row.querySelector(".run-resume")?.addEventListener("click", () => startScrape({ resumeId: id }));
+    row.querySelector(".run-open").addEventListener("click", () => openRun(id));
+    row.querySelector(".run-csv").addEventListener("click", async () => {
+      const run = await RunStore.getRun(id);
+      const posts = await RunStore.getPosts(id);
+      downloadFile(combinedToCSV(posts, false), `reddit_${run.subreddit}_combined.csv`, "text/csv");
+    });
+    row.querySelector(".run-delete").addEventListener("click", async () => {
+      if (!confirm("Delete this run and its data from this browser? Downloaded files are not affected.")) return;
+      await RunStore.deleteRun(id);
+      renderRunsPanel();
+    });
+  });
 }
 
-function clearProgress() {
-  localStorage.removeItem(STORAGE_KEY);
+async function openRun(id) {
+  const run = await RunStore.getRun(id);
+  if (!run) return;
+  const posts = await RunStore.getPosts(id);
+  currentRun = run;
+  scrapeResult = { subreddit: run.subreddit, posts, keywordsEnabled: false, summary: buildSummary(posts, false), run };
+  showResults(scrapeResult);
+  resultsSection.scrollIntoView({ behavior: "smooth" });
 }
 
-// --- Time estimate helpers ---
 function estimateTime(postCount, includeComments) {
   if (includeComments) {
     const batches = Math.ceil(postCount / 10);
@@ -227,7 +279,7 @@ function formatDuration(seconds) {
 }
 
 // --- API call helper ---
-async function apiCall(body, maxRetries = 3) {
+async function apiCall(body, maxRetries = 5) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const resp = await fetch("/api/scrape", {
       method: "POST",
@@ -239,8 +291,8 @@ async function apiCall(body, maxRetries = 3) {
     if (resp.ok) return data;
 
     const errMsg = data.error || `Server error (${resp.status})`;
-    if (attempt < maxRetries && (resp.status === 429 || resp.status >= 500 || errMsg.includes("rate limit"))) {
-      const wait = 5000 * 2 ** attempt;
+    if (attempt < maxRetries && (resp.status === 429 || resp.status >= 500 || /rate limit|timeout|slow down/i.test(errMsg))) {
+      const wait = Math.min(5000 * 2 ** attempt, 60000);
       updateProgress(`Data source rate-limited. Waiting ${wait / 1000}s and retrying...`);
       await new Promise((r) => setTimeout(r, wait));
       continue;
@@ -437,6 +489,7 @@ function showThreadResult(result) {
     posts: [post],
     keywordsEnabled: false,
     summary: buildSummary([post], false),
+    run: null,
   };
 }
 
@@ -662,8 +715,11 @@ function renderEstimateBar(posts, comments, scopeLabel) {
   `;
 }
 
+let lastCount = null;
+
 function renderRangeCount(count) {
   const range = document.getElementById("estimateRange");
+  lastCount = count || null;
   if (!range) return;
   if (!count) {
     range.textContent = "Pick a start date to count posts in a custom range.";
@@ -721,262 +777,267 @@ dateFromInput.addEventListener("change", updateCollectionEstimate);
 dateToInput.addEventListener("change", updateCollectionEstimate);
 
 // --- Scrape Orchestration ---
-scrapeBtn.addEventListener("click", () => startScrape(false));
+scrapeBtn.addEventListener("click", () => startScrape());
 
-async function startScrape(isResume) {
-  const saved = isResume ? loadProgress() : null;
+let currentRun = null;
 
-  let subreddit, sortQueue, limit, includeComments, includeSelftext, skipNSFW;
-  let timeFilter, keywords = [];
-  let customAfterEpoch = null, customBeforeEpoch = null;
-  let allPosts = [], seenIds = new Set();
-  let startSortIdx = 0, startAfter = null, startModeFetched = 0;
+// Chunk bounds are sent to the archive as `after`/`before`, which are EXCLUSIVE
+// on both ends. Edges e_0..e_n partition the window; chunk k fetches
+// created_utc in (e_k, e_{k+1}+1), i.e. [e_k+1, e_{k+1}] inclusive, so adjacent
+// chunks meet with no gap and no overlap, and the window's own first and last
+// seconds are included.
+function makeChunks(window, expectedPosts) {
+  if (!window) return [{ i: 0, after: null, before: null, status: "pending", posts: 0 }];
+  const n = expectedPosts ? Math.min(MAX_CHUNKS, Math.max(1, Math.ceil(expectedPosts / CHUNK_TARGET_POSTS))) : 1;
+  const lo = window.after - 1, hi = window.before + 1;
+  const edge = (k) => (k === 0 ? lo : k === n ? hi - 1 : Math.floor(lo + ((hi - 1 - lo) * k) / n));
+  const chunks = [];
+  for (let i = 0; i < n; i++) {
+    chunks.push({ i, after: edge(i), before: edge(i + 1) + 1, status: "pending", posts: 0 });
+  }
+  return chunks;
+}
 
-  if (saved) {
-    subreddit = saved.subreddit;
-    allPosts = saved.posts;
-    seenIds = new Set(saved.seenIds);
-    sortQueue = saved.sortQueue;
-    startSortIdx = saved.currentSortIdx;
-    startAfter = saved.currentAfter;
-    startModeFetched = saved.currentModeFetched;
-    limit = saved.settings.limit;
-    includeComments = saved.settings.includeComments;
-    includeSelftext = saved.settings.includeSelftext;
-    skipNSFW = saved.settings.skipNSFW;
-    timeFilter = saved.settings.timeFilter;
-    keywords = saved.settings.keywords || [];
-    customAfterEpoch = saved.settings.customAfterEpoch || null;
-    customBeforeEpoch = saved.settings.customBeforeEpoch || null;
-  } else {
-    const subredditInput = document.getElementById("subreddit").value.trim();
-    if (!subredditInput) {
-      showError("Please enter a subreddit name or URL.");
-      return;
-    }
+// Build a run from the current controls. The window is fixed now, so a resumed
+// run — or the same run re-created from its manifest — covers the same posts.
+async function planRunFromUI() {
+  const subredditInput = document.getElementById("subreddit").value.trim();
+  if (!subredditInput) { showError("Please enter a subreddit name or URL."); return null; }
+  const sortModes = Array.from(document.querySelectorAll("#sortPills .pill.active")).map((p) => p.dataset.value);
+  if (sortModes.length === 0) { showError("Please select at least one sort mode."); return null; }
 
-    const sortModes = Array.from(document.querySelectorAll("#sortPills .pill.active")).map(
-      (p) => p.dataset.value
-    );
-    if (sortModes.length === 0) {
-      showError("Please select at least one sort mode.");
-      return;
-    }
+  let limit = parseInt(document.getElementById("limit").value, 10) || 500;
+  limit = Math.min(limit, MAX_POSTS_PER_SORT);
+  const includeComments = document.getElementById("includeComments").checked;
+  const includeSelftext = document.getElementById("includeSelftext").checked;
+  const skipNSFW = document.getElementById("skipNSFW").checked;
+  const keywords = parseKeywords();
+  const scope = getScope();
 
-    limit = parseInt(document.getElementById("limit").value, 10) || 500;
-    limit = Math.min(limit, MAX_POSTS_PER_SORT);
-    includeComments = document.getElementById("includeComments").checked;
-    includeSelftext = document.getElementById("includeSelftext").checked;
-    skipNSFW = document.getElementById("skipNSFW").checked;
-    timeFilter = document.getElementById("timeFilter").value;
-    keywords = parseKeywords();
-    if (timeFilter === "custom") {
-      const fromVal = document.getElementById("dateFrom").value;
-      const toVal = document.getElementById("dateTo").value;
-      if (!fromVal) {
-        showError("Please select a start date for your custom range.");
-        return;
-      }
-      // Convert dates to epoch — "from" is start of day, "to" is end of day
-      customAfterEpoch = Math.floor(new Date(fromVal + "T00:00:00Z").getTime() / 1000);
-      customBeforeEpoch = toVal
-        ? Math.floor(new Date(toVal + "T23:59:59Z").getTime() / 1000)
-        : null;
-    }
-    subreddit = subredditInput;
-    const urlMatch = subreddit.match(/reddit\.com\/r\/([^/?\s]+)/);
-    if (urlMatch) subreddit = urlMatch[1];
-    subreddit = subreddit.replace(/^r\//, "");
-
-    // Build sort queue: with keywords, one pass per keyword per sort
-    sortQueue = [];
-    const passes = keywords.length ? keywords : [""];
-    for (const query of passes) for (const mode of sortModes) {
-      const tag = query ? ` "${query}"` : "";
-      if (mode === "top" && limit > 1000 && currentAnalysis && !query) {
-        sortQueue.push({ sort: "top", timeFilter: "all", label: "Top (All Time)", query });
-        sortQueue.push({ sort: "top", timeFilter: "year", label: "Top (Year)", query });
-        sortQueue.push({ sort: "top", timeFilter: "month", label: "Top (Month)", query });
-      } else if (mode === "controversial" && limit > 1000 && currentAnalysis && !query) {
-        sortQueue.push({ sort: "controversial", timeFilter: "all", label: "Controversial (All Time)", query });
-        sortQueue.push({ sort: "controversial", timeFilter: "year", label: "Controversial (Year)", query });
-        sortQueue.push({ sort: "controversial", timeFilter: "month", label: "Controversial (Month)", query });
-      } else {
-        // The selected range applies to every sort; the server derives the
-        // window from the preset, or from the custom epochs sent alongside.
-        sortQueue.push({ sort: mode, timeFilter, label: mode.charAt(0).toUpperCase() + mode.slice(1) + tag, query });
-      }
-    }
+  let window = null;
+  if (scope !== "count") {
+    const win = selectedWindow();
+    if (!win) { showError("Please select a start date for your custom range."); return null; }
+    window = win.all
+      ? { after: currentAnalysis?.archive?.earliest_post || 1104537600, before: win.before }
+      : { after: win.after, before: win.before };
   }
 
+  let subreddit = subredditInput;
+  const urlMatch = subreddit.match(/reddit\.com\/r\/([^/?\s]+)/);
+  if (urlMatch) subreddit = urlMatch[1];
+  subreddit = subreddit.replace(/^r\//, "");
+
+  const queue = [];
+  const passes = keywords.length ? keywords : [""];
+  for (const query of passes) for (const mode of sortModes) {
+    const tag = query ? ` "${query}"` : "";
+    queue.push({ sort: mode, label: mode.charAt(0).toUpperCase() + mode.slice(1) + tag, query });
+  }
+
+  // Whole-community and time-frame scopes collect everything in the window:
+  // size the chunks from the count (wait for it if it is still running) and
+  // let every chunk walk to exhaustion rather than stop at the limit box.
+  let expected = null;
+  if (scope !== "count") {
+    let count = lastCount;
+    if (!count) {
+      updateProgress("Counting the posts in this scope…", null);
+      progressSection.classList.remove("hidden");
+      try { count = await countSelectedWindow(); } catch { count = null; }
+    }
+    expected = count ? count.posts : null;
+    limit = MAX_POSTS_PER_SORT;
+  }
+  return {
+    id: RunStore.newId(),
+    subreddit,
+    status: "running",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    settings: { limit, includeComments, includeSelftext, skipNSFW, keywords },
+    plan: { scope, window, limit, queue, expectedPosts: expected },
+    chunks: makeChunks(window, expected),
+    progress: { chunkIdx: 0, modeIdx: 0, after: null, modeFetched: 0, seq: 0 },
+    counts: { posts: 0, comments: 0 },
+  };
+}
+
+async function startScrape(opts = {}) {
+  const resumeId = opts.resumeId || null;
+  let run;
+  let allPosts = [];
+  if (resumeId) {
+    run = await RunStore.getRun(resumeId);
+    if (!run) { showError("That run is no longer in this browser."); return; }
+    allPosts = await RunStore.getPosts(resumeId);
+    // failed chunks get another go on resume
+    for (const c of run.chunks) if (c.status === "failed") { c.status = "pending"; c.error = ""; }
+    run.status = "running";
+    run.finishedAt = null;
+  } else {
+    run = await planRunFromUI();
+    if (!run) return;
+  }
+  currentRun = run;
+  const { subreddit, settings, plan } = run;
+  const { limit, includeComments, includeSelftext, skipNSFW } = settings;
+  const seenIds = new Set(allPosts.map((p) => p.id));
+  const byId = new Map(allPosts.map((p) => [p.id, p]));
   const batchSize = includeComments ? 10 : 100;
-  const totalTarget = limit * sortQueue.length;
+  const expectedTotal = plan.expectedPosts || limit * plan.queue.length;
 
   // UI state
   abortController = new AbortController();
   progressSection.classList.remove("hidden");
   resultsSection.classList.add("hidden");
   errorSection.classList.add("hidden");
-  resumeBanner.classList.add("hidden");
   scrapeBtn.classList.add("hidden");
   stopBtn.classList.remove("hidden");
   progressFill.style.width = "0%";
-  updateProgress(isResume ? `Resuming... (${allPosts.length} posts already collected)` : "Starting squeeze...");
+  updateProgress(resumeId ? `Resuming… (${allPosts.length.toLocaleString()} posts already collected)` : "Starting squeeze…");
+  await RunStore.saveRun(run);
 
-  const settings = { limit, includeComments, includeSelftext, skipNSFW, timeFilter, keywords, customAfterEpoch, customBeforeEpoch };
+  const persistPosts = async (posts) => {
+    if (!posts.length) return;
+    await RunStore.putPosts(run.id, posts, run.progress.seq);
+    run.progress.seq += posts.filter((p) => p.seq === undefined).length;
+    run.counts = { posts: allPosts.length, comments: allPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
+    await RunStore.saveRun(run);
+  };
 
-  try {
-    // A Stop can land mid-thread; those posts are already in allPosts and
-    // seenIds, so they would never be revisited by the batch loop below.
-    for (const p of allPosts) {
-      if (p.comments_complete !== false) continue;
-      await completeComments(p, (n) => {
-        updateProgress(`Resuming: finishing comments for "${p.title.slice(0, 40)}" (${n.toLocaleString()} of ~${(p.num_comments || 0).toLocaleString()})`, null);
-      });
-    }
+  const chunkLabel = (c) => run.chunks.length > 1 ? `Chunk ${c.i + 1}/${run.chunks.length} (${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}) · ` : "";
 
-    for (let modeIdx = startSortIdx; modeIdx < sortQueue.length; modeIdx++) {
-      const mode = sortQueue[modeIdx];
-      let after = modeIdx === startSortIdx ? startAfter : null;
-      let modeFetched = modeIdx === startSortIdx ? startModeFetched : 0;
+  const progressLine = (c, mode, extra) => {
+    const done = allPosts.length;
+    const pct = Math.min(99, (done / Math.max(expectedTotal, 1)) * 100);
+    const remaining = Math.max(expectedTotal - done, 0);
+    updateProgress(`${chunkLabel(c)}${mode.label}: ${done.toLocaleString()} posts collected (${formatDuration(estimateTime(remaining, includeComments))} left)${extra || ""}`, pct);
+  };
 
+  // One chunk: every queue mode, paginated, from the saved cursor.
+  const runChunk = async (c) => {
+    const p = run.progress;
+    for (let modeIdx = p.modeIdx; modeIdx < plan.queue.length; modeIdx++) {
+      const mode = plan.queue[modeIdx];
+      let after = modeIdx === p.modeIdx ? p.after : null;
+      let modeFetched = modeIdx === p.modeIdx ? p.modeFetched : 0;
       while (modeFetched < limit) {
-        const overallFetched = allPosts.length;
-        const percent = (overallFetched / totalTarget) * 100;
-
-        const remainingPosts = totalTarget - overallFetched;
-        const etaStr = formatDuration(estimateTime(remainingPosts, includeComments));
-        updateProgress(
-          `${mode.label}: ${overallFetched} posts collected (${etaStr} remaining)`,
-          percent
-        );
-
+        progressLine(c, mode);
         const reqBody = {
-          subreddit,
-          sort: mode.sort,
-          batchSize: Math.min(batchSize, limit - modeFetched),
-          after,
-          includeComments,
-          skipIds: Array.from(seenIds),
-          timeFilter: mode.timeFilter,
-          query: mode.query || "",
+          subreddit, sort: mode.sort, batchSize: Math.min(batchSize, limit - modeFetched), after,
+          includeComments, skipIds: Array.from(seenIds).slice(-200), timeFilter: "all", query: mode.query || "",
         };
-        if (customAfterEpoch) reqBody.afterEpoch = customAfterEpoch;
-        if (customBeforeEpoch) reqBody.beforeEpoch = customBeforeEpoch;
+        if (c.after) reqBody.afterEpoch = c.after;
+        if (c.before) reqBody.beforeEpoch = c.before;
         const batchResp = await apiCall(reqBody);
 
         if (mode.query) {
-          for (const p of batchResp.posts) {
-            const existing = allPosts.find((x) => x.id === p.id);
+          for (const post of batchResp.posts) {
+            const existing = byId.get(post.id);
             if (existing && existing.query && !existing.query.split(";").includes(mode.query)) existing.query += ";" + mode.query;
-            p.query = mode.query;
+            post.query = mode.query;
           }
         }
-        let newPosts = batchResp.posts.filter((p) => !seenIds.has(p.id));
-
-        if (skipNSFW) {
-          newPosts = newPosts.filter((p) => !p.over_18);
-        }
-        if (!includeSelftext) {
-          newPosts.forEach((p) => { p.selftext = ""; });
-        }
-
-        for (const p of newPosts) {
-          seenIds.add(p.id);
-          allPosts.push(p);
-          modeFetched++;
-        }
+        let newPosts = batchResp.posts.filter((post) => !seenIds.has(post.id));
+        if (skipNSFW) newPosts = newPosts.filter((post) => !post.over_18);
+        if (!includeSelftext) newPosts.forEach((post) => { post.selftext = ""; });
+        for (const post of newPosts) { seenIds.add(post.id); byId.set(post.id, post); allPosts.push(post); modeFetched++; c.posts++; }
 
         if (includeComments) {
-          for (const p of newPosts) {
-            await completeComments(p, (n) => {
-              updateProgress(
-                `${mode.label}: ${allPosts.length} posts collected — finishing a large thread (${n.toLocaleString()} of ~${(p.num_comments || 0).toLocaleString()} comments)`,
-                percent
-              );
-            });
+          for (const post of newPosts) {
+            await completeComments(post, (n) => progressLine(c, mode, ` — finishing a large thread (${n.toLocaleString()} of ~${(post.num_comments || 0).toLocaleString()} comments)`));
           }
         }
 
-        // Save progress every batch
-        saveProgress({
-          subreddit,
-          posts: allPosts,
-          seenIds,
-          sortQueue,
-          currentSortIdx: modeIdx,
-          currentAfter: batchResp.after,
-          currentModeFetched: modeFetched,
-          settings,
-        });
+        // persistPosts writes the posts BEFORE the run record that carries this
+        // advanced cursor, so a crash between the two re-fetches a batch (deduped)
+        // rather than skipping one. Keep that order.
+        run.progress = { ...run.progress, chunkIdx: c.i, modeIdx, after: batchResp.after, modeFetched };
+        await persistPosts(newPosts);
 
         if (batchResp.done || newPosts.length === 0) break;
         after = batchResp.after;
       }
+      run.progress = { ...run.progress, modeIdx: modeIdx + 1, after: null, modeFetched: 0 };
+    }
+  };
+
+  let outcome = "complete";
+  try {
+    // A Stop can land mid-thread; finish those before fetching anything new.
+    for (const post of allPosts) {
+      if (post.comments_complete !== false) continue;
+      await completeComments(post, (n) => updateProgress(`Resuming: finishing comments for "${post.title.slice(0, 40)}" (${n.toLocaleString()} of ~${(post.num_comments || 0).toLocaleString()})`, null));
+      await persistPosts([post]);
     }
 
-    updateProgress("Done!", 100);
-    clearProgress();
+    for (const c of run.chunks) {
+      if (c.status === "done") continue;
+      if (c.i !== run.progress.chunkIdx) run.progress = { ...run.progress, chunkIdx: c.i, modeIdx: 0, after: null, modeFetched: 0 };
+      c.status = "running";
+      let attempt = 0;
+      while (true) {
+        try {
+          await runChunk(c);
+          c.status = "done";
+          c.error = "";
+          break;
+        } catch (err) {
+          if (err.name === "AbortError") throw err;
+          attempt++;
+          c.error = String(err.message || err).slice(0, 200);
+          if (attempt >= CHUNK_ATTEMPTS) {
+            c.status = "failed";
+            outcome = "complete_with_gaps";
+            break;
+          }
+          const wait = 20000 * attempt;
+          updateProgress(`${chunkLabel(c)}problem (${c.error}) — retrying in ${wait / 1000}s (attempt ${attempt + 1} of ${CHUNK_ATTEMPTS})…`, null);
+          await new Promise((resolve, reject) => {
+            const signal = abortController.signal;
+            const onAbort = () => { clearTimeout(t); reject(Object.assign(new Error("aborted"), { name: "AbortError" })); };
+            const t = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, wait);
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+      }
+      run.progress = { ...run.progress, chunkIdx: c.i + 1, modeIdx: 0, after: null, modeFetched: 0 };
+      await RunStore.saveRun(run);
+    }
 
-    scrapeResult = {
-      subreddit,
-      posts: allPosts,
-      keywordsEnabled: false,
-      summary: buildSummary(allPosts, false),
-    };
-
+    run.status = outcome;
+    run.finishedAt = Date.now();
+    run.counts = { posts: allPosts.length, comments: allPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
+    run.manifest = buildManifest(run, allPosts);
+    await RunStore.saveRun(run);
+    updateProgress(outcome === "complete" ? "Done — every chunk finished." : "Done with gaps — some chunks failed; see the run status below.", 100);
+    scrapeResult = { subreddit, posts: allPosts, keywordsEnabled: false, summary: buildSummary(allPosts, false), run };
     showResults(scrapeResult);
-  } catch (err) {
-    if (err.name === "AbortError") {
-      // Show partial data on stop
-      if (allPosts.length > 0) {
-        scrapeResult = {
-          subreddit,
-          posts: allPosts,
-          keywordsEnabled: false,
-          summary: buildSummary(allPosts, false),
-        };
-        updateProgress(
-          `Stopped at ${allPosts.length} posts. Partial data is available for download below.`,
-          (allPosts.length / totalTarget) * 100
-        );
-        showResults(scrapeResult);
-        document.getElementById("resultsSubtitle").textContent =
-          `Scrape stopped early. ${allPosts.length} posts collected — you can still download this partial dataset.`;
-      } else {
-        updateProgress("Stopped — no posts were collected.", null);
-      }
-      // Save for resume
-      saveProgress({
-        subreddit,
-        posts: allPosts,
-        seenIds,
-        sortQueue,
-        currentSortIdx: startSortIdx,
-        currentAfter: null,
-        currentModeFetched: 0,
-        settings,
-      });
-    } else {
-      showError(err.message);
-      // Even on error, show partial data if we have some
-      if (allPosts.length > 0) {
-        scrapeResult = {
-          subreddit,
-          posts: allPosts,
-          keywordsEnabled: false,
-          summary: buildSummary(allPosts, false),
-        };
-        showResults(scrapeResult);
-        document.getElementById("resultsSubtitle").textContent =
-          `Error occurred after collecting ${allPosts.length} posts. You can download the partial data below.`;
-      }
-      progressSection.classList.add("hidden");
+    // The file is what the researcher must not lose: hand it over without asking.
+    if (allPosts.length > 0) {
+      downloadFile(combinedToCSV(allPosts, false), `reddit_${subreddit}_combined.csv`, "text/csv");
     }
+  } catch (err) {
+    const stopped = err.name === "AbortError";
+    run.status = stopped ? "stopped" : "failed";
+    run.counts = { posts: allPosts.length, comments: allPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
+    run.manifest = buildManifest(run, allPosts);
+    await RunStore.saveRun(run);
+    if (!stopped) showError(err.message);
+    if (allPosts.length > 0) {
+      scrapeResult = { subreddit, posts: allPosts, keywordsEnabled: false, summary: buildSummary(allPosts, false), run };
+      updateProgress(`${stopped ? "Stopped" : "Failed"} at ${allPosts.length.toLocaleString()} posts — saved; Resume continues from here.`, (allPosts.length / Math.max(expectedTotal, 1)) * 100);
+      showResults(scrapeResult);
+    } else {
+      updateProgress(`${stopped ? "Stopped" : "Failed"} — no posts were collected yet.`, null);
+    }
+    if (!stopped) progressSection.classList.add("hidden");
   } finally {
     scrapeBtn.classList.remove("hidden");
     stopBtn.classList.add("hidden");
     abortController = null;
+    renderRunsPanel();
   }
 }
 
@@ -984,181 +1045,7 @@ stopBtn.addEventListener("click", () => {
   if (abortController) abortController.abort();
 });
 
-// --- Resume banner ---
-function checkForSavedProgress() {
-  const saved = loadProgress();
-  if (!saved) return;
-
-  const ago = Math.round((Date.now() - saved.timestamp) / 60000);
-  const agoStr = ago < 1 ? "just now" : ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
-
-  document.getElementById("resumeDetails").textContent =
-    `r/${saved.subreddit} — ${saved.posts.length} posts collected (saved ${agoStr})`;
-  resumeBanner.classList.remove("hidden");
-}
-
-document.getElementById("resumeBtn").addEventListener("click", () => {
-  resumeBanner.classList.add("hidden");
-  startScrape(true);
-});
-
-document.getElementById("discardBtn").addEventListener("click", () => {
-  clearProgress();
-  resumeBanner.classList.add("hidden");
-});
-
-checkForSavedProgress();
-
-// --- Study discovery: plain-text description -> verified communities + keywords ---
-let pendingKeywords = null;
-let discovery = null;
-
-const discoverBtn = document.getElementById("discoverBtn");
-const discoverResults = document.getElementById("discoverResults");
-
-discoverBtn.addEventListener("click", async () => {
-  const description = document.getElementById("studyDescription").value.trim();
-  if (description.length < 20) {
-    showError("Describe the study in at least a sentence: the phenomenon, who talks about it, and any time or language limits.");
-    return;
-  }
-  errorSection.classList.add("hidden");
-  discoverBtn.disabled = true;
-  discoverBtn.querySelector(".btn-text").textContent = "Thinking… (10–20 s)";
-  try {
-    const resp = await fetch("/api/discover", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description }),
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || `Server error (${resp.status})`);
-    discovery = data;
-    renderDiscovery(data);
-  } catch (err) {
-    showError(err.message);
-  } finally {
-    discoverBtn.disabled = false;
-    discoverBtn.querySelector(".btn-text").textContent = "Suggest communities & keywords";
-  }
-});
-
-function fmtCount(n) {
-  if (!n) return "0";
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-  if (n >= 1e4) return Math.round(n / 1e3) + "k";
-  return n.toLocaleString();
-}
-
-function renderDiscovery(data) {
-  const verified = data.communities.filter((c) => c.exists);
-  const missing = data.communities.filter((c) => !c.exists);
-  const rows = data.communities.map((c, i) => {
-    const since = c.earliest_post ? new Date(c.earliest_post * 1000).getFullYear() : "";
-    return `<tr class="${c.exists ? "" : "missing"}">
-      <td><input type="checkbox" class="disc-sub" data-i="${i}" ${c.exists && c.archived_posts > 0 ? "checked" : "disabled"} /></td>
-      <td><strong>r/${escapeHtml(c.name)}</strong>${c.over18 ? ' <span class="badge">NSFW</span>' : ""}<br><span class="estimate-label" style="text-transform:none">${escapeHtml(c.role)} · ${escapeHtml(c.why)}</span></td>
-      <td class="num">${c.exists ? fmtCount(c.subscribers) : "—"}</td>
-      <td class="num">${c.exists ? fmtCount(c.archived_posts) : "not in archive"}</td>
-      <td class="num">${c.exists ? fmtCount(c.archived_comments) : ""}</td>
-      <td class="num">${since}</td>
-      <td>${c.exists ? `<button type="button" class="link-button disc-analyze" data-name="${escapeHtml(c.name)}">Analyze</button>` : ""}</td>
-    </tr>`;
-  }).join("");
-
-  // The archive has no OR: each alternative runs as its own search, so show it
-  // as its own chip — a bare word like "wife" is then visible and can be unticked.
-  const chips = [];
-  data.keywords.forEach((k, i) => {
-    for (const term of k.query.split(/\s+OR\s+/i)) {
-      const t = term.trim();
-      if (!t) continue;
-      const bare = !/"/.test(t) && t.split(/\s+/).length === 1;
-      chips.push({ i, term: t, why: k.why, bare });
-    }
-  });
-  const keywords = chips.map((c, j) => `
-    <label class="discover-keyword${c.bare ? " discover-keyword-bare" : ""}" title="${escapeHtml(c.why)}${c.bare ? " — single bare word: matches every post containing it" : ""}">
-      <input type="checkbox" class="disc-kw" data-term="${escapeHtml(c.term)}" ${c.bare ? "" : "checked"} /> <code>${escapeHtml(c.term)}</code>${c.bare ? " <span class=\"badge\">bare word</span>" : ""}
-    </label>`).join("");
-
-  discoverResults.innerHTML = `
-    <h3>Communities — ${verified.length} verified in the archive${missing.length ? `, ${missing.length} suggested but not found` : ""}</h3>
-    <div class="discover-table-wrap"><table class="discover-table">
-      <thead><tr><th></th><th>Community</th><th class="num">Members</th><th class="num">Archived posts</th><th class="num">Comments</th><th class="num">Since</th><th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
-    <h3>Keyword searches — ${chips.length} (each chip is one search; counts appear once you Analyze a community)</h3>
-    <div class="discover-keywords">${keywords}</div>
-    ${data.exclude_terms.length ? `<p class="limit-note">Suggested exclude terms for the CLI's --filter: ${data.exclude_terms.map(escapeHtml).join(", ")}</p>` : ""}
-    ${data.caveats.length ? `<h3>Caveats to address in the methods</h3><ul class="discover-caveats">${data.caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>` : ""}
-    <div class="discover-actions">
-      <button type="button" class="btn-analyze" id="discUseBtn"><span class="btn-text">Use selected keywords here</span></button>
-      <button type="button" class="btn-analyze" id="discYamlBtn"><span class="btn-text">Download study file for the CLI</span></button>
-      <span class="limit-note">The web app collects one community at a time; the study file runs all selected ones.</span>
-    </div>
-  `;
-  discoverResults.classList.remove("hidden");
-
-  discoverResults.querySelectorAll(".disc-analyze").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      pendingKeywords = selectedKeywords();
-      document.getElementById("subreddit").value = btn.dataset.name;
-      analyzeBtn.click();
-      document.getElementById("subreddit").scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-  });
-  document.getElementById("discUseBtn").addEventListener("click", () => {
-    const kws = selectedKeywords();
-    if (optionsPanel.classList.contains("hidden")) {
-      pendingKeywords = kws;
-      showError("Keywords saved — now Analyze a community (click Analyze in the table) and they will be filled in.");
-    } else {
-      document.getElementById("keywords").value = kws.join("\n");
-      updateCollectionEstimate();
-      optionsPanel.scrollIntoView({ behavior: "smooth" });
-    }
-  });
-  document.getElementById("discYamlBtn").addEventListener("click", () => {
-    downloadFile(buildStudyYaml(data, selectedCommunities(), selectedKeywords()), "study.yaml", "text/yaml");
-  });
-}
-
-function selectedKeywords() {
-  return Array.from(discoverResults.querySelectorAll(".disc-kw:checked")).map((el) => el.dataset.term);
-}
-
-function selectedCommunities() {
-  return Array.from(discoverResults.querySelectorAll(".disc-sub:checked")).map((el) => discovery.communities[Number(el.dataset.i)].name);
-}
-
-function yamlQuote(s) {
-  return "'" + String(s).replace(/'/g, "''") + "'";
-}
-
-// A study file the command-line tool runs as-is; the description travels with it.
-function buildStudyYaml(data, subs, keywords) {
-  const lines = [
-    "# Generated by LemonSqueeze study discovery on " + new Date().toISOString().slice(0, 10),
-    "# Suggestions came from " + data.model + "; communities below were verified in the archive.",
-    "# Description:",
-    ...data.description.split(/\r?\n/).map((l) => "#   " + l),
-    "",
-    "name: my_study",
-    "subreddits: [" + subs.join(", ") + "]",
-    "queries:",
-    ...keywords.map((q) => "  - " + yamlQuote(q)),
-    "exclude_terms: [" + data.exclude_terms.map(yamlQuote).join(", ") + "]",
-    "date_from: null            # e.g. 2024-01-01 or '2 years ago'",
-    "date_to: null",
-    "sources: [arctic_shift]",
-    "comment_mode: settled",
-    "comment_settle_hours: 72",
-    "anonymise_authors: true",
-    "",
-  ];
-  return lines.join("\n");
-}
+renderRunsPanel();
 
 // --- Results display ---
 function showResults(data) {
@@ -1183,6 +1070,22 @@ function showResults(data) {
     }
   }
   summaryDiv.innerHTML = statsHtml;
+
+  const statusEl = document.getElementById("runStatus");
+  const run = data.run;
+  if (run) {
+    const failed = run.chunks.filter((c) => c.status === "failed");
+    const chunksNote = run.chunks.length > 1 ? ` ${run.chunks.filter((c) => c.status === "done").length} of ${run.chunks.length} time chunks finished.` : "";
+    const gaps = failed.length ? ` Missing: ${failed.map((c) => `${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}`).join(", ")} — use "Retry failed chunks" in Your runs.` : "";
+    const saved = RunStore.isPersistent() ? " Saved in this browser; the combined CSV was downloaded automatically when the run finished." : "";
+    statusEl.innerHTML = `<span class="run-badge ${statusClass(run.status)}">${statusLabel(run.status)}</span>r/${escapeHtml(run.subreddit)} · ${escapeHtml(scopeText(run.plan))}.${chunksNote}${gaps}${run.status === "complete" || run.status === "complete_with_gaps" ? saved : " Resume continues from the saved cursor."}`;
+    document.getElementById("resultsSubtitle").textContent = run.status === "complete"
+      ? "Your dataset is ready. Keep the run report with the data."
+      : run.status === "complete_with_gaps" ? "Finished, but some time chunks are missing — retry them before you analyse."
+      : "Partial dataset — you can download it now and resume later.";
+  } else {
+    statusEl.innerHTML = "";
+  }
 
   // Preview
   const previewDiv = document.getElementById("preview");
@@ -1239,6 +1142,13 @@ document.getElementById("downloadJson").addEventListener("click", () => {
     `reddit_${scrapeResult.subreddit}_full.json`,
     "application/json"
   );
+});
+
+document.getElementById("downloadManifest").addEventListener("click", () => {
+  if (!scrapeResult) return;
+  const run = scrapeResult.run;
+  const manifest = run ? (run.manifest || buildManifest(run, scrapeResult.posts)) : { note: "no run metadata (thread download)" };
+  downloadFile(JSON.stringify(manifest, null, 2), `reddit_${scrapeResult.subreddit}_run_report.json`, "application/json");
 });
 
 document.getElementById("downloadCsv").addEventListener("click", () => {
