@@ -777,6 +777,12 @@ function renderEstimateBar(posts, comments, scopeLabel) {
     <p class="estimate-range" id="estimateRange">${known ? "" : "Counting…"}</p>
     <p class="estimate-hint">Progress is saved automatically — you can close this tab and resume later.</p>
   `;
+  const label = scrapeBtn.querySelector(".btn-text");
+  if (label) {
+    label.textContent = known
+      ? `Squeeze ${posts.toLocaleString()} posts · ${formatDuration(estimateTime(posts, includeComments))}${includeComments ? " with comments" : ""}`
+      : "Squeeze Data (counting…)";
+  }
 }
 
 let lastCount = null;
@@ -1104,6 +1110,14 @@ async function startScrape(opts = {}) {
     renderRunsPanel();
   }
 }
+
+// Leaving the page while a run is active pauses it; browsers show their own
+// confirmation when a handler sets returnValue, so the user can stay.
+window.addEventListener("beforeunload", (e) => {
+  if (!abortController) return;
+  e.preventDefault();
+  e.returnValue = "A collection is running in this tab. Leaving pauses it; you can resume from Your runs.";
+});
 
 stopBtn.addEventListener("click", () => {
   if (abortController) abortController.abort();
