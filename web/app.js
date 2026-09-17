@@ -155,6 +155,8 @@ function buildSummary(posts, keywordsEnabled) {
 // Every batch is written as it arrives; a run always ends with an explicit status.
 const CHUNK_TARGET_POSTS = 1000;   // split long scopes into time chunks of about this size
 const MAX_CHUNKS = 60;
+const CHUNK_FALLBACK_SECONDS = 30 * 86400; // chunk length when no count is available
+const COUNT_WAIT_MS = 20000;               // how long Squeeze waits for a slow count
 const CHUNK_ATTEMPTS = 3;
 
 function isoDay(ts) { return new Date(ts * 1000).toISOString().slice(0, 10); }
@@ -290,13 +292,14 @@ function formatDuration(seconds) {
 }
 
 // --- API call helper ---
-async function apiCall(body, maxRetries = 5) {
+async function apiCall(body, maxRetries = 5, { background = false } = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const resp = await fetch("/api/scrape", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: abortController?.signal,
+      // background calls (counts) outlive a run and must not share its abort
+      signal: background ? undefined : abortController?.signal,
     });
     const data = await resp.json();
     if (resp.ok) return data;
@@ -304,7 +307,7 @@ async function apiCall(body, maxRetries = 5) {
     const errMsg = data.error || `Server error (${resp.status})`;
     if (attempt < maxRetries && (resp.status === 429 || resp.status >= 500 || /rate limit|timeout|slow down/i.test(errMsg))) {
       const wait = Math.min(5000 * 2 ** attempt, 60000);
-      updateProgress(`Data source rate-limited. Waiting ${wait / 1000}s and retrying...`);
+      if (!background) updateProgress(`Data source rate-limited. Waiting ${wait / 1000}s and retrying...`);
       await new Promise((r) => setTimeout(r, wait));
       continue;
     }
@@ -709,7 +712,7 @@ async function countSelectedWindow() {
   const countOne = (query) => {
     const key = `${currentAnalysis.info.name}:${after}:${before}:${query}`;
     if (!windowCounts.has(key)) {
-      const request = apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: after, beforeEpoch: before, query })
+      const request = apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: after, beforeEpoch: before, query }, 5, { background: true })
         .catch((err) => { windowCounts.delete(key); throw err; });
       windowCounts.set(key, request);
     }
@@ -786,14 +789,14 @@ function renderEstimateBar(posts, comments, scopeLabel) {
         <span class="estimate-label">estimated time${includeComments ? " (with comments)" : ""}</span>
       </div>
     </div>
-    <p class="estimate-range" id="estimateRange">${known ? "" : "Counting…"}</p>
+    <p class="estimate-range" id="estimateRange">${known ? "" : "Counting… you can start now; the count only sizes the estimate and the run collects every match either way."}</p>
     <p class="estimate-hint">Progress is saved automatically — you can close this tab and resume later.</p>
   `;
   const label = scrapeBtn.querySelector(".btn-text");
   if (label) {
     label.textContent = known
       ? `Squeeze ${posts.toLocaleString()} posts · ${eta}${includeComments ? " with comments" : ""}`
-      : "Squeeze Data (counting…)";
+      : "Squeeze Data now · count still running";
   }
 }
 
@@ -1049,7 +1052,11 @@ async function storedPosts(runId) {
 // seconds are included.
 function makeChunks(window, expectedPosts) {
   if (!window) return [{ i: 0, after: null, before: null, status: "pending", posts: 0 }];
-  const n = expectedPosts ? Math.min(MAX_CHUNKS, Math.max(1, Math.ceil(expectedPosts / CHUNK_TARGET_POSTS))) : 1;
+  // Without a count (still running, or failed) chunk by time instead: about a
+  // month each, so progress, resume and the measured pace still work.
+  const n = expectedPosts
+    ? Math.min(MAX_CHUNKS, Math.max(1, Math.ceil(expectedPosts / CHUNK_TARGET_POSTS)))
+    : Math.min(MAX_CHUNKS, Math.max(1, Math.ceil((window.before - window.after) / CHUNK_FALLBACK_SECONDS)));
   const lo = window.after - 1, hi = window.before + 1;
   const edge = (k) => (k === 0 ? lo : k === n ? hi - 1 : Math.floor(lo + ((hi - 1 - lo) * k) / n));
   const chunks = [];
@@ -1097,16 +1104,22 @@ async function planRunFromUI() {
   }
 
   // Whole-community and time-frame scopes collect everything in the window:
-  // size the chunks from the count (wait for it if it is still running) and
-  // let every chunk walk to exhaustion rather than stop at the limit box.
+  // size the chunks from the count when it is at hand and let every chunk walk
+  // to exhaustion rather than stop at the limit box. The count is only for
+  // sizing, so a slow one must not hold the run back: keyword counts on a big
+  // community can take minutes (one full-text query per keyword) and start at
+  // once; plain counts get a short wait, then the run chunks by time instead.
   let expected = null;
   let expectedComments = null;
   if (scope !== "count") {
     let count = lastCount;
     if (!count) {
-      updateProgress("Counting the posts in this scope…", null);
-      progressSection.classList.remove("hidden");
-      try { count = await countSelectedWindow(); } catch { count = null; }
+      const pending = countSelectedWindow().catch(() => null);
+      if (keywords.length === 0) {
+        updateProgress("Counting the posts in this scope…", null);
+        progressSection.classList.remove("hidden");
+        count = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), COUNT_WAIT_MS))]);
+      }
     }
     expected = count ? count.posts : null;
     expectedComments = count ? count.comments : null;
@@ -1200,13 +1213,16 @@ async function startScrape(opts = {}) {
       const avg = chunkTimes.reduce((a, b) => a + b, 0) / chunkTimes.length / 1000;
       const currentElapsed = (Date.now() - chunkStartedAt) / 1000;
       seconds = remainingChunks * avg + Math.max(avg - currentElapsed, avg * 0.15);
-    } else {
+    } else if (plan.expectedPosts || plan.scope === "count") {
       const doneChunks = run.chunks.filter((x) => x.status === "done").length;
       const share = Math.max(0.05, 1 - doneChunks / Math.max(run.chunks.length, 1));
       seconds = estimateTime(Math.round(expectedTotal * share), includeComments, plan.expectedComments != null ? Math.round(plan.expectedComments * share) : null);
+    } else {
+      return null; // no count and nothing measured yet
     }
     return formatDuration(Math.max(5, Math.round(seconds)));
   };
+  const leftText = (c) => { const t = etaLeft(c); return t ? `${t} left` : "time estimate after the first chunk"; };
   const overallPct = (c) => {
     const done = run.chunks.filter((x) => x.status === "done").length;
     return Math.min(99, ((done + 0.5) / Math.max(run.chunks.length, 1)) * 100);
@@ -1214,7 +1230,7 @@ async function startScrape(opts = {}) {
 
   const progressLine = (c, mode, extra) => {
     const done = allPosts.length;
-    updateProgress(`${chunkLabel(c)}${mode.label}: ${done.toLocaleString()} posts collected · ${etaLeft(c)} left${extra || ""}`, overallPct(c));
+    updateProgress(`${chunkLabel(c)}${mode.label}: ${done.toLocaleString()} posts collected · ${leftText(c)}${extra || ""}`, overallPct(c));
   };
 
   // One chunk: every queue mode, paginated, from the saved cursor.
@@ -1417,7 +1433,7 @@ async function startScrape(opts = {}) {
     run.direct = true;
 
     const tick = (extra) => {
-      updateProgress(`${chunkLabel(c)}comments: ${extra} · ${etaLeft(c)} left`, overallPct(c));
+      updateProgress(`${chunkLabel(c)}comments: ${extra} · ${leftText(c)}`, overallPct(c));
     };
 
     if (sweepable) {
