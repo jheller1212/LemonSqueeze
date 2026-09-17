@@ -757,6 +757,36 @@ function selectedWindow() {
 const windowCounts = new Map();
 let countRequestSeq = 0;
 
+// Keyword counts: the archive's full-text search takes seconds per page on a
+// big community and is the first thing it sheds under load, so the server
+// count often cannot finish at all. Estimate in the browser instead: three
+// one-week samples (newest, middle, oldest), one request each through the
+// archive client's own backoff, scaled by matches-per-week to the window.
+async function estimateKeywordCount(subreddit, after, before, query) {
+  const WEEK = 7 * 86400;
+  const span = before - after;
+  const single = span <= 3 * WEEK;
+  const wins = single
+    ? [{ after, before }]
+    : [{ after: before - WEEK, before }, { after: Math.floor(after + span / 2 - WEEK / 2), before: Math.floor(after + span / 2 + WEEK / 2) }, { after, before: after + WEEK }];
+  const rates = [], perPost = [];
+  let exact = single;
+  for (const w of wins) { // one at a time: a burst of full-text queries is what gets shed
+    const batch = await Archive.get("posts/search", { subreddit, query, after: w.after, before: w.before, limit: 100, sort: "desc" }, { retries: 5, soft: true });
+    const n = batch.length;
+    if (n === 0) { rates.push(0); continue; }
+    const ts = batch.map((p) => p.created_utc);
+    // a full page covers less than the week: scale by the page's own span
+    const dt = n < 100 ? w.before - w.after : Math.max(1, Math.max(...ts) - Math.min(...ts));
+    if (n === 100) exact = false;
+    rates.push(n / dt);
+    perPost.push(batch.reduce((z, p) => z + (p.num_comments || 0), 0) / n);
+  }
+  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  const est = Math.round(mean(rates) * span);
+  return { posts: est, comments: Math.round(est * (perPost.length ? mean(perPost) : 0)), exact, rough: !exact };
+}
+
 async function countSelectedWindow() {
   const win = selectedWindow();
   if (!win || !currentAnalysis) return null;
@@ -770,7 +800,9 @@ async function countSelectedWindow() {
   const countOne = (query) => {
     const key = `${currentAnalysis.info.name}:${after}:${before}:${query}`;
     if (!windowCounts.has(key)) {
-      const request = apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: after, beforeEpoch: before, query }, 5, { background: true })
+      const request = (query && typeof Archive !== "undefined" && Archive.isAvailable()
+        ? estimateKeywordCount(currentAnalysis.info.name, after, before, query)
+        : apiCall({ action: "count", subreddit: currentAnalysis.info.name, afterEpoch: after, beforeEpoch: before, query }, 5, { background: true }))
         .catch((err) => { windowCounts.delete(key); throw err; });
       windowCounts.set(key, request);
     }
@@ -782,6 +814,7 @@ async function countSelectedWindow() {
     posts: parts.reduce((s, p) => s + p.posts, 0),
     comments: parts.reduce((s, p) => s + p.comments, 0),
     exact: parts.every((p) => p.exact),
+    rough: parts.some((p) => p.rough),
     all: false,
     keywords: keywords.length,
     perKeyword: keywords.map((k, i) => ({ keyword: k, posts: parts[i].posts })),
@@ -811,6 +844,11 @@ function updateCollectionEstimate() {
   }
 
   renderEstimateBar(null, null, scopeLabel);
+  // A previous count may have disabled the button ("more than 100,000") and
+  // would otherwise size the next run; that verdict belongs to the old
+  // scope — this one starts open and unsized until its own count lands.
+  scrapeBtn.disabled = false;
+  lastCount = null;
 
   const seq = ++countRequestSeq;
   countSelectedWindow()
@@ -882,7 +920,7 @@ function renderRangeCount(count) {
   const approx = count.exact ? "" : "≈ ";
   let qualifier = count.all
     ? "in the whole archive"
-    : count.exact ? "in this time range (exact)" : "in this time range (estimate, typically within ±15%)";
+    : count.exact ? "in this time range (exact)" : count.rough ? "in this time range (rough estimate from three sampled weeks — the run collects every match regardless)" : "in this time range (estimate, typically within ±15%)";
   if (count.keywords) {
     const breakdown = count.perKeyword.map((p) => `${escapeHtml(p.keyword)}: ${approx}${p.posts.toLocaleString()}`).join(" · ");
     qualifier = `matching your ${count.keywords} keyword${count.keywords > 1 ? "s" : ""} ${qualifier}` +
@@ -1691,6 +1729,16 @@ window.addEventListener("beforeunload", (e) => {
 stopBtn.addEventListener("click", () => {
   if (abortController) abortController.abort();
 });
+
+// While the archive sheds load the client backs off for up to half a minute
+// per attempt; say so rather than leave the last progress line frozen.
+if (typeof Archive !== "undefined") {
+  Archive.onWait = (why, attempt, ms) => {
+    if (!abortController) return;
+    const base = statusText.textContent.replace(/\s*·\s*archive busy.*$/, "");
+    statusText.textContent = `${base} · archive busy (${why}), retry ${attempt} in ${Math.round(ms / 1000)}s`;
+  };
+}
 
 renderRunsPanel();
 

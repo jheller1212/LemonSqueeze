@@ -31,7 +31,11 @@ const Archive = (() => {
     if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
   });
 
-  async function get(path, params, { retries = 8, signal } = {}) {
+  // `soft` requests (estimates, previews) never count towards declaring the
+  // archive unreachable; only the run's own traffic may do that, and even
+  // then the verdict expires so a transient blip does not pin the tab to the
+  // slower server path for the rest of the session.
+  async function get(path, params, { retries = 8, signal, soft = false } = {}) {
     const url = `${BASE}/${path}?${new URLSearchParams(params)}`;
     let delay = 1500;
     let last = "";
@@ -61,13 +65,18 @@ const Archive = (() => {
         else if (err instanceof TypeError) { // network / CORS
           last = "network";
           stats.retries++;
-          if (++consecutiveNetworkFailures >= 4) { available = false; throw Object.assign(new Error("archive unreachable from the browser"), { name: "ArchiveUnavailable" }); }
+          if (!soft && ++consecutiveNetworkFailures >= 4) {
+            available = false;
+            setTimeout(() => { available = true; consecutiveNetworkFailures = 0; }, 60000);
+            throw Object.assign(new Error("archive unreachable from the browser"), { name: "ArchiveUnavailable" });
+          }
         } else throw err;
       } finally {
         clearTimeout(timer);
         signal?.removeEventListener("abort", onOuter);
         release();
       }
+      if (typeof api.onWait === "function") { try { api.onWait(last, attempt + 1, delay); } catch { /* ignore */ } }
       await sleep(delay, signal);
       delay = Math.min(delay * 2, 30000);
     }
@@ -168,9 +177,10 @@ const Archive = (() => {
     return out;
   }
 
-  return {
+  const api = {
     get, walkPostsDesc, sweepComments, shardedSweep, threadComments, mapConcurrent,
     SETTLE_SECONDS, stats,
     isAvailable: () => available,
   };
+  return api;
 })();

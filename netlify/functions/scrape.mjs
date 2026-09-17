@@ -73,7 +73,7 @@ function getTimeFilterEpoch(timeFilter) {
 
 // --- Arctic Shift ---
 
-async function arcticSearchPosts(subreddit, { limit = 100, before = null, after = null, query = "" } = {}) {
+async function arcticSearchPosts(subreddit, { limit = 100, before = null, after = null, query = "", retries = 3 } = {}) {
   const params = new URLSearchParams({
     subreddit,
     limit: String(Math.min(limit, 100)),
@@ -84,7 +84,7 @@ async function arcticSearchPosts(subreddit, { limit = 100, before = null, after 
   if (query) params.set("query", query);
 
   const url = `${ARCTIC_SHIFT}/api/posts/search?${params}`;
-  const data = await fetchJSON(url);
+  const data = await fetchJSON(url, retries);
   return data?.data || [];
 }
 
@@ -92,10 +92,10 @@ async function arcticSearchPosts(subreddit, { limit = 100, before = null, after 
 // posted in the same second as a page's last one would fall between pages.
 // Re-fetch from that second (dedup absorbs the overlap) and stop on the time
 // budget rather than a count — the caller continues from the returned cursor.
-async function arcticSearchPostsAsc(subreddit, after, before, query = "") {
+async function arcticSearchPostsAsc(subreddit, after, before, query = "", retries = 3) {
   const params = new URLSearchParams({ subreddit, limit: "100", sort: "asc", after: String(after), before: String(before) });
   if (query) params.set("query", query);
-  const data = await fetchJSON(`${ARCTIC_SHIFT}/api/posts/search?${params}`);
+  const data = await fetchJSON(`${ARCTIC_SHIFT}/api/posts/search?${params}`, retries);
   return data?.data || [];
 }
 
@@ -447,15 +447,21 @@ async function analyzeSubreddit(subreddit) {
 // subreddits, so: walk the window exactly while it is small, otherwise sample
 // the posting rate at several points and extrapolate (calibrated to ~±15%).
 async function countWindow(subreddit, after, before, query = "") {
-  const EXACT_PAGES = 5;
+  // A keyword count is a full-text query over the whole community per page,
+  // seconds each on a big subreddit and the first thing the archive sheds
+  // under load. It only sizes the estimate, so keep it cheap: two exact
+  // pages, one mid-window sample, no retries — a rough figure in a few
+  // seconds beats an exact one in minutes.
+  const EXACT_PAGES = query ? 2 : 5;
+  const retries = query ? 1 : 3;
   // Stay inside the 26s function limit even when the archive sheds load:
   // stop walking exactly at EXACT_BUDGET_MS and stop sampling at TOTAL_BUDGET_MS.
-  const EXACT_BUDGET_MS = 12000, TOTAL_BUDGET_MS = 20000;
+  const EXACT_BUDGET_MS = query ? 7000 : 12000, TOTAL_BUDGET_MS = query ? 12000 : 20000;
   const started = Date.now();
   let posts = 0, comments = 0, cursor = before, pages = 0, endPage = null;
   const seen = new Set();
   while (pages < EXACT_PAGES && Date.now() - started < EXACT_BUDGET_MS) {
-    const batch = await arcticSearchPosts(subreddit, { limit: 100, after, before: cursor, query });
+    const batch = await arcticSearchPosts(subreddit, { limit: 100, after, before: cursor, query, retries });
     pages++;
     for (const p of batch) {
       if (!p.id || seen.has(p.id)) continue;
@@ -482,9 +488,10 @@ async function countWindow(subreddit, after, before, query = "") {
     perPost.push(batch.reduce((z, p) => z + (p.num_comments || 0), 0) / batch.length);
   };
   sample(endPage);
-  for (const frac of [0, 0.25, 0.5, 0.75]) {
+  for (const frac of query ? [0.5] : [0, 0.25, 0.5, 0.75]) {
     if (Date.now() - started > TOTAL_BUDGET_MS) break;
-    const batch = await arcticSearchPostsAsc(subreddit, Math.floor(after + span * frac), before, query);
+    let batch = [];
+    try { batch = await arcticSearchPostsAsc(subreddit, Math.floor(after + span * frac), before, query, retries); } catch { break; }
     if (batch.length === 100) sample(batch);
     await delay(200);
   }
