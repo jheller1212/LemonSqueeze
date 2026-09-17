@@ -1001,7 +1001,9 @@ async function startScrape(opts = {}) {
   const persistPosts = async (posts) => {
     if (!posts.length) return;
     await RunStore.putPosts(run.id, posts, run.progress.seq);
-    run.progress.seq += posts.filter((p) => p.seq === undefined).length;
+    let n = run.progress.seq;
+    for (const p of posts) if (p.seq === undefined) p.seq = n++;
+    run.progress.seq = n;
     for (const p of posts) {
       if (p.comments_complete !== undefined && !p.comments_offloaded && !p.comments_counted) { commentTotal += p.comments?.length || 0; p.comments_counted = true; }
       if (p.comments_complete !== undefined) offload(p);
@@ -1102,7 +1104,10 @@ async function startScrape(opts = {}) {
     seenComments.set(post.id, new Set(post.comments.map((cm) => cm.id)));
   };
   if (includeComments && sweepable) {
-    for (const post of allPosts) if (post.comments_complete === undefined && !post.reused) openPost(post);
+    for (const post of allPosts) {
+      if (post.reused) continue;
+      if (post.comments_complete === undefined || (post.comments_complete === false && post.comments_walked === false)) openPost(post);
+    }
   }
   const creditComments = (comments) => {
     let credited = 0;
@@ -1118,10 +1123,30 @@ async function startScrape(opts = {}) {
     }
     return credited;
   };
+  // A post may only be finalised once every chunk its settle window touches has
+  // been swept. Failed chunks are holes: posts reaching into one stay open, and
+  // at the end are persisted as "not fully fetched" so a retry re-opens them.
+  const failedRanges = () => run.chunks.filter((x) => x.status === "failed" && x.after != null).map((x) => [x.after, x.before]);
+  const touchesFailed = (post) => failedRanges().some(([a, b]) => post.created_utc < b && post.created_utc + Archive.SETTLE_SECONDS > a);
+  const sweptThrough = (upTo) => {
+    for (const x of run.chunks) { if (x.i >= upTo.i) break; if (x.status !== "done") return x.after; }
+    return upTo.before;
+  };
+
   // Finalise open posts whose settle window ended before `frontier` (all of them when force).
   const finalizeOpen = async (frontier, force, label) => {
     const ready = [];
-    for (const post of openPosts.values()) if (force || post.created_utc + Archive.SETTLE_SECONDS <= frontier) ready.push(post);
+    const heldBack = [];
+    for (const post of openPosts.values()) {
+      if (touchesFailed(post)) { if (force) heldBack.push(post); continue; }
+      if (force || post.created_utc + Archive.SETTLE_SECONDS <= frontier) ready.push(post);
+    }
+    for (const post of heldBack) {
+      post.comments_walked = false;
+      post.comments_complete = false; // not fully fetched: a chunk its comments fall into failed
+      openPosts.delete(post.id); seenComments.delete(post.id);
+    }
+    for (let i = 0; i < heldBack.length; i += 200) await persistPosts(heldBack.slice(i, i + 200));
     if (!ready.length) return 0;
     for (const post of ready) { finishPost(post, post.comments, true); openPosts.delete(post.id); seenComments.delete(post.id); }
     const settled = ready.filter((post) => post.comments_complete === true);
@@ -1149,7 +1174,7 @@ async function startScrape(opts = {}) {
   // A stop or crash mid-run must not lose credited comments: persist open posts' partial trees.
   const persistOpen = async () => {
     const open = Array.from(openPosts.values());
-    for (let i = 0; i < open.length; i += 200) await RunStore.putPosts(run.id, open.slice(i, i + 200), run.progress.seq);
+    for (let i = 0; i < open.length; i += 200) await persistPosts(open.slice(i, i + 200));
   };
 
   const runChunkDirect = async (c) => {
@@ -1209,7 +1234,7 @@ async function startScrape(opts = {}) {
         credited += creditComments(comments);
         if (pages % 5 === 0) tick(`sweeping ${isoDay(c.after + 1)} → ${isoDay(c.before - 1)} — ${credited.toLocaleString()} comments credited · ${openPosts.size.toLocaleString()} posts awaiting their 30-day settle window`);
       } });
-      const finalized = await finalizeOpen(c.before, false, chunkLabel(c));
+      const finalized = await finalizeOpen(sweptThrough(c), false, chunkLabel(c));
       if (finalized) tick(`${finalized.toLocaleString()} posts finalised · ${openPosts.size.toLocaleString()} still settling`);
       await persistOpen();
       return;
