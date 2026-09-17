@@ -1315,6 +1315,10 @@ footer {
 .btn-scrape-big:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
 .squeeze-note { font-size: 0.75rem; color: var(--text-muted); }
 
+.export-sizes { font-size: 0.85rem; color: var(--text-muted); margin: 0 0 0.5rem; line-height: 1.5; }
+.export-sizes strong { color: var(--text); }
+.export-gzip { margin-bottom: 0.75rem; }
+
 .time-filter-note, .limit-note {
   font-size: 0.72rem;
   color: var(--text-dim);

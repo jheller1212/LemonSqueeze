@@ -233,6 +233,12 @@
         <div id="runStatus" class="run-status"></div>
         <div id="summary" class="stats-grid"></div>
 
+        <p id="exportSizes" class="export-sizes"></p>
+        <label class="toggle-switch export-gzip" title="Compress while downloading. R (read.csv / readr) and pandas open .csv.gz directly; Excel does not.">
+          <input type="checkbox" id="gzipToggle" />
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">Compress downloads (.gz) — about 5–10× smaller; R and pandas read .gz directly, Excel does not</span>
+        </label>
         <div class="download-bar">
           <button class="btn-download btn-download-primary" id="downloadCombinedCsv" title="Tidy CSV: one row per comment joined with parent post. Ready for R (tidyverse) or Python (pandas). Recommended for most research.">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
