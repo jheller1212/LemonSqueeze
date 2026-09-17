@@ -173,10 +173,10 @@ function scopeText(plan) {
   return plan.scope === "all" ? `whole community (${range})` : range;
 }
 
-function buildManifest(run, posts) {
-  const incomplete = posts.filter((p) => p.comments_complete === false).map((p) => p.id);
-  const notFetched = posts.filter((p) => p.comments_complete === false && p.comments_walked !== true).map((p) => p.id);
-  const archiveShort = posts.filter((p) => p.comments_complete === false && p.comments_walked === true).map((p) => p.id);
+function buildManifest(run, st) {
+  const incomplete = st.incomplete;
+  const notFetched = st.notFetched;
+  const archiveShort = st.archiveShort;
   return {
     tool: "LemonSqueeze web app",
     run_id: run.id,
@@ -196,7 +196,7 @@ function buildManifest(run, posts) {
     skip_nsfw: run.settings.skipNSFW,
     sorts: Array.from(new Set(run.plan.queue.map((m) => m.sort))),
     chunks: run.chunks.map((c) => ({ index: c.i, from_utc: c.after === null ? null : new Date((c.after + 1) * 1000).toISOString(), to_utc: c.before === null ? null : new Date((c.before - 1) * 1000).toISOString(), status: c.status, posts: c.posts, error: c.error || undefined })),
-    counts: { posts: posts.length, comments: posts.reduce((n, p) => n + (p.comments?.length || 0), 0), posts_with_incomplete_comments: incomplete.length, posts_reused_from_earlier_runs: posts.filter((p) => p.reused).length },
+    counts: { posts: st.total_posts, comments: st.total_comments, posts_with_incomplete_comments: incomplete.length, posts_reused_from_earlier_runs: st.reused },
     comment_method: run.direct ? "browser → archive: windowed sweep of all comments in the subreddit (+30-day settle margin) grouped by post, then per-post walks for any post below 95% of Reddit's count; keyword and newest-N scopes use per-post walks" : "server batches: per-post walks",
     archive_requests_from_browser: run.direct ? Archive.stats.requests : 0,
     posts_with_incomplete_comments: incomplete,
@@ -243,8 +243,7 @@ async function renderRunsPanel() {
     row.querySelector(".run-open").addEventListener("click", () => openRun(id));
     row.querySelector(".run-csv").addEventListener("click", async () => {
       const run = await RunStore.getRun(id);
-      const posts = await storedPosts(id);
-      downloadFile(combinedToCSV(posts, false), `reddit_${run.subreddit}_combined.csv`, "text/csv");
+      await exportRun(run, "combined");
     });
     row.querySelector(".run-delete").addEventListener("click", async () => {
       if (!confirm("Delete this run and its data from this browser? Downloaded files are not affected.")) return;
@@ -257,9 +256,9 @@ async function renderRunsPanel() {
 async function openRun(id) {
   const run = await RunStore.getRun(id);
   if (!run) return;
-  const posts = await storedPosts(id);
+  const st = await runStats(id);
   currentRun = run;
-  scrapeResult = { subreddit: run.subreddit, posts, keywordsEnabled: false, summary: buildSummary(posts, false), run };
+  scrapeResult = { subreddit: run.subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), run };
   showResults(scrapeResult);
   resultsSection.scrollIntoView({ behavior: "smooth" });
 }
@@ -862,6 +861,84 @@ scrapeBtn.addEventListener("click", () => startScrape());
 
 let currentRun = null;
 
+function stripStoreFields(p) {
+  const { runId: _r, seq: _s, comments_offloaded: _o, comments_counted: _c, ...post } = p;
+  return post;
+}
+
+// Counts, completeness lists and a preview, read from the store in batches —
+// a 100,000-post run never has to sit in memory at once.
+async function runStats(runId) {
+  const st = { total_posts: 0, total_comments: 0, total_score: 0, incomplete: [], notFetched: [], archiveShort: [], reused: 0, preview: [] };
+  await RunStore.iteratePosts(runId, 500, async (batch) => {
+    for (const p of batch) {
+      st.total_posts++;
+      st.total_comments += p.comments?.length || 0;
+      st.total_score += p.score || 0;
+      if (p.comments_complete === false) {
+        st.incomplete.push(p.id);
+        if (p.comments_walked === true) st.archiveShort.push(p.id); else st.notFetched.push(p.id);
+      }
+      if (p.reused) st.reused++;
+      if (st.preview.length < 5) st.preview.push(stripStoreFields(p));
+    }
+  });
+  return st;
+}
+
+function statsToSummary(st) {
+  return {
+    total_posts: st.total_posts,
+    total_comments: st.total_comments,
+    total_score: st.total_score,
+    posts_with_incomplete_comments: st.incomplete.length,
+    posts_not_fully_fetched: st.notFetched.length,
+    posts_archive_below_reddit_count: st.archiveShort.length,
+  };
+}
+
+// Build the file in parts straight from the store: no whole-file string (the
+// browser caps a single string around 500 MB) and no whole run in memory.
+const EXPORTERS = {
+  combined: { fn: combinedToCSV, suffix: "combined.csv", mime: "text/csv" },
+  posts: { fn: postsToCSV, suffix: "posts.csv", mime: "text/csv" },
+  comments: { fn: commentsToCSV, suffix: "comments.csv", mime: "text/csv" },
+};
+
+async function exportRun(run, kind) {
+  const subtitle = document.getElementById("resultsSubtitle");
+  const previous = subtitle.textContent;
+  const parts = [];
+  let n = 0;
+  const status = (msg) => { subtitle.textContent = msg; };
+  try {
+    if (kind === "json") {
+      parts.push("[\n");
+      let first = true;
+      await RunStore.iteratePosts(run.id, 500, async (batch) => {
+        for (const p of batch) { parts.push((first ? "" : ",\n") + JSON.stringify(stripStoreFields(p), null, 2)); first = false; }
+        n += batch.length;
+        status(`Preparing download… ${n.toLocaleString()} posts`);
+      });
+      parts.push("\n]\n");
+      downloadFile(parts, `reddit_${run.subreddit}_full.json`, "application/json");
+    } else {
+      const { fn, suffix, mime } = EXPORTERS[kind];
+      let first = true;
+      await RunStore.iteratePosts(run.id, 500, async (batch) => {
+        parts.push(fn(batch.map(stripStoreFields), false, { header: first, subreddit: run.subreddit }) + "\n");
+        first = false;
+        n += batch.length;
+        status(`Preparing download… ${n.toLocaleString()} posts`);
+      });
+      if (first) parts.push(fn([], false, { subreddit: run.subreddit }) + "\n");
+      downloadFile(parts, `reddit_${run.subreddit}_${suffix}`, mime);
+    }
+  } finally {
+    subtitle.textContent = previous;
+  }
+}
+
 // Posts as stored, without the store's own bookkeeping fields.
 async function storedPosts(runId) {
   const posts = await RunStore.getPosts(runId);
@@ -1358,28 +1435,26 @@ async function startScrape(opts = {}) {
 
     run.status = outcome;
     run.finishedAt = Date.now();
-    const finalPosts = await storedPosts(run.id);
-    run.counts = { ...run.counts, posts: finalPosts.length, comments: finalPosts.reduce((n, p) => n + (p.comments?.length || 0), 0) };
-    run.manifest = buildManifest(run, finalPosts);
+    const st = await runStats(run.id);
+    run.counts = { ...run.counts, posts: st.total_posts, comments: st.total_comments };
+    run.manifest = buildManifest(run, st);
     await RunStore.saveRun(run);
     updateProgress(outcome === "complete" ? "Done — every chunk finished." : "Done with gaps — some chunks failed; see the run status below.", 100);
-    scrapeResult = { subreddit, posts: finalPosts, keywordsEnabled: false, summary: buildSummary(finalPosts, false), run };
+    scrapeResult = { subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), run };
     showResults(scrapeResult);
     // The file is what the researcher must not lose: hand it over without asking.
-    if (finalPosts.length > 0) {
-      downloadFile(combinedToCSV(finalPosts, false), `reddit_${subreddit}_combined.csv`, "text/csv");
-    }
+    if (st.total_posts > 0) await exportRun(run, "combined");
   } catch (err) {
     const stopped = err.name === "AbortError";
     try { await persistOpen(); } catch { /* best effort */ }
     run.status = stopped ? "stopped" : "failed";
-    const partial = await storedPosts(run.id);
-    run.counts = { ...run.counts, posts: partial.length, comments: partial.reduce((n, p) => n + (p.comments?.length || 0), 0) };
-    run.manifest = buildManifest(run, partial);
+    const st = await runStats(run.id);
+    run.counts = { ...run.counts, posts: st.total_posts, comments: st.total_comments };
+    run.manifest = buildManifest(run, st);
     await RunStore.saveRun(run);
     if (!stopped) showError(err.message);
-    if (partial.length > 0) {
-      scrapeResult = { subreddit, posts: partial, keywordsEnabled: false, summary: buildSummary(partial, false), run };
+    if (st.total_posts > 0) {
+      scrapeResult = { subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), run };
       updateProgress(`${stopped ? "Stopped" : "Failed"} at ${allPosts.length.toLocaleString()} posts — saved; Resume continues from here.`, (allPosts.length / Math.max(expectedTotal, 1)) * 100);
       showResults(scrapeResult);
     } else {
@@ -1604,7 +1679,7 @@ function showResults(data) {
 
   // Preview
   const previewDiv = document.getElementById("preview");
-  const previewPosts = data.posts.slice(0, 5);
+  const previewPosts = data.preview || (data.posts || []).slice(0, 5);
   previewDiv.innerHTML = previewPosts
     .map(
       (p) => `
@@ -1650,42 +1725,42 @@ function toDateParts(isoString) {
 }
 
 // --- Download Handlers ---
-document.getElementById("downloadJson").addEventListener("click", () => {
+document.getElementById("downloadJson").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  downloadFile(
-    JSON.stringify(scrapeResult.posts, null, 2),
-    `reddit_${scrapeResult.subreddit}_full.json`,
-    "application/json"
-  );
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "json"); return; }
+  downloadFile(JSON.stringify(scrapeResult.posts, null, 2), `reddit_${scrapeResult.subreddit}_full.json`, "application/json");
 });
 
-document.getElementById("downloadManifest").addEventListener("click", () => {
+document.getElementById("downloadManifest").addEventListener("click", async () => {
   if (!scrapeResult) return;
   const run = scrapeResult.run;
-  const manifest = run ? (run.manifest || buildManifest(run, scrapeResult.posts)) : { note: "no run metadata (thread download)" };
+  const manifest = run ? (run.manifest || buildManifest(run, await runStats(run.id))) : { note: "no run metadata (thread download)" };
   downloadFile(JSON.stringify(manifest, null, 2), `reddit_${scrapeResult.subreddit}_run_report.json`, "application/json");
 });
 
-document.getElementById("downloadCsv").addEventListener("click", () => {
+document.getElementById("downloadCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "posts"); return; }
   const csv = postsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_posts.csv`, "text/csv");
 });
 
-document.getElementById("downloadCommentsCsv").addEventListener("click", () => {
+document.getElementById("downloadCommentsCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "comments"); return; }
   const csv = commentsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_comments.csv`, "text/csv");
 });
 
-document.getElementById("downloadCombinedCsv").addEventListener("click", () => {
+document.getElementById("downloadCombinedCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "combined"); return; }
   const csv = combinedToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_combined.csv`, "text/csv");
 });
 
 function downloadFile(content, filename, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
+  const blob = new Blob(Array.isArray(content) ? content : [content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -1703,7 +1778,7 @@ function csvEscape(val) {
   return str;
 }
 
-function postsToCSV(posts, keywordsEnabled) {
+function postsToCSV(posts, keywordsEnabled, opts = {}) {
   const headers = [
     "id", "subreddit", "title", "selftext", "author",
     "created_utc", "created_datetime", "date", "day_of_week", "hour_utc",
@@ -1722,7 +1797,7 @@ function postsToCSV(posts, keywordsEnabled) {
     const dp = toDateParts(p.created_datetime);
     const row = {
       id: p.id,
-      subreddit: scrapeResult.subreddit,
+      subreddit: opts.subreddit ?? scrapeResult?.subreddit ?? "",
       title: p.title,
       selftext: p.selftext,
       author: p.author,
@@ -1760,10 +1835,10 @@ function postsToCSV(posts, keywordsEnabled) {
     return headers.map((h) => csvEscape(row[h])).join(",");
   });
 
-  return [headers.join(","), ...rows].join("\n");
+  return (opts.header === false ? rows : [headers.join(","), ...rows]).join("\n");
 }
 
-function combinedToCSV(posts, keywordsEnabled) {
+function combinedToCSV(posts, keywordsEnabled, opts = {}) {
   const headers = [
     "post_id", "subreddit", "post_title", "post_selftext", "post_author",
     "post_created_utc", "post_created_datetime", "post_date", "post_day_of_week", "post_hour_utc",
@@ -1789,7 +1864,7 @@ function combinedToCSV(posts, keywordsEnabled) {
     const pdp = toDateParts(p.created_datetime);
     const postFields = {
       post_id: p.id,
-      subreddit: scrapeResult.subreddit,
+      subreddit: opts.subreddit ?? scrapeResult?.subreddit ?? "",
       post_title: p.title,
       post_selftext: p.selftext,
       post_author: p.author,
@@ -1865,10 +1940,10 @@ function combinedToCSV(posts, keywordsEnabled) {
     }
   }
 
-  return [headers.join(","), ...rows].join("\n");
+  return (opts.header === false ? rows : [headers.join(","), ...rows]).join("\n");
 }
 
-function commentsToCSV(posts, keywordsEnabled) {
+function commentsToCSV(posts, keywordsEnabled, opts = {}) {
   const headers = [
     "comment_id", "post_id", "subreddit", "post_title",
     "body", "author", "created_utc", "created_datetime",
@@ -1888,7 +1963,7 @@ function commentsToCSV(posts, keywordsEnabled) {
       const row = {
         comment_id: c.id,
         post_id: p.id,
-        subreddit: scrapeResult.subreddit,
+        subreddit: opts.subreddit ?? scrapeResult?.subreddit ?? "",
         post_title: p.title,
         body: c.body,
         author: c.author,
@@ -1918,5 +1993,5 @@ function commentsToCSV(posts, keywordsEnabled) {
     }
   }
 
-  return [headers.join(","), ...rows].join("\n");
+  return (opts.header === false ? rows : [headers.join(","), ...rows]).join("\n");
 }
