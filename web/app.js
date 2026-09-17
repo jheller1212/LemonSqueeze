@@ -162,14 +162,70 @@ const CHUNK_ATTEMPTS = 3;
 function isoDay(ts) { return new Date(ts * 1000).toISOString().slice(0, 10); }
 
 function statusLabel(status) {
-  return { complete: "complete", complete_with_gaps: "complete with gaps", stopped: "stopped", failed: "failed", running: "unfinished" }[status] || status;
+  return { complete: "complete", complete_with_gaps: "complete with gaps", stopped: "stopped", failed: "failed", running: "unfinished", queued: "queued" }[status] || status;
 }
 function statusClass(status) {
-  return { complete: "complete", complete_with_gaps: "gaps", stopped: "stopped", failed: "failed", running: "running" }[status] || "stopped";
+  return { complete: "complete", complete_with_gaps: "gaps", stopped: "stopped", failed: "failed", running: "running", queued: "queued" }[status] || "stopped";
+}
+
+// --- Batches: one scope split into several runs that execute back-to-back ---
+// A window is inclusive [after, before] in epoch seconds. Splitting cuts it at
+// calendar boundaries (UTC), newest segment first, so each run is a tidy
+// "2025", "2024 H1", "2024 Q3" file rather than an arbitrary slice.
+function splitWindow(window, splitBy) {
+  if (!window || !splitBy || splitBy === "none") return [window];
+  const months = { year: 12, half: 6, quarter: 3 }[splitBy];
+  if (!months) return [window];
+  const cuts = [];
+  const start = new Date(window.after * 1000);
+  let y = start.getUTCFullYear();
+  let m = Math.floor(start.getUTCMonth() / months) * months;
+  for (;;) {
+    m += months;
+    if (m >= 12) { m -= 12; y += 1; }
+    const t = Math.floor(Date.UTC(y, m, 1) / 1000);
+    if (t > window.before) break;
+    cuts.push(t);
+  }
+  const segments = [];
+  let after = window.after;
+  for (const cut of cuts) { segments.push({ after, before: cut - 1 }); after = cut; }
+  segments.push({ after, before: window.before });
+  return segments.filter((w) => w.before >= w.after).reverse();
+}
+
+function segmentLabel(w) {
+  const a = new Date(w.after * 1000), b = new Date(w.before * 1000);
+  const ya = a.getUTCFullYear(), yb = b.getUTCFullYear();
+  if (ya !== yb) return `${isoDay(w.after)} → ${isoDay(w.before)}`;
+  const ma = a.getUTCMonth(), mb = b.getUTCMonth();
+  const startsMonth = a.getUTCDate() === 1;
+  const endsMonth = new Date((w.before + 1) * 1000).getUTCDate() === 1; // segments end one second before a cut
+  if (startsMonth && endsMonth) {
+    if (ma === 0 && mb === 11) return String(ya);
+    if (mb - ma === 5 && ma % 6 === 0) return `${ya} H${ma / 6 + 1}`;
+    if (mb - ma === 2 && ma % 3 === 0) return `${ya} Q${ma / 3 + 1}`;
+  }
+  return `${isoDay(w.after)} → ${isoDay(w.before)}`;
+}
+
+function getSplitBy() {
+  const el = document.getElementById("splitBy");
+  return el ? el.value : "none";
+}
+
+// The next queued run of the same batch, if any.
+async function nextQueuedRun(run) {
+  if (!run.batch) return null;
+  const runs = await RunStore.listRuns();
+  return runs
+    .filter((r) => r.batch && r.batch.id === run.batch.id && r.status === "queued")
+    .sort((a, b) => a.batch.index - b.batch.index)[0] || null;
 }
 
 function scopeText(plan) {
   if (plan.scope === "count") return `${plan.limit.toLocaleString()} newest posts`;
+  if (plan.segment) return plan.segment;
   const w = plan.window;
   const range = w ? `${isoDay(w.after)} → ${isoDay(w.before)}` : "whole community";
   return plan.scope === "all" ? `whole community (${range})` : range;
@@ -191,6 +247,7 @@ function buildManifest(run, st) {
       failed: "aborted by an error; Resume retries",
     }[run.status],
     scope: run.plan.scope,
+    batch: run.batch ? { id: run.batch.id, run_index: run.batch.index + 1, runs_in_batch: run.batch.total, segment: run.plan.segment || null } : null,
     window_utc: run.plan.window ? { from: new Date(run.plan.window.after * 1000).toISOString(), to: new Date(run.plan.window.before * 1000).toISOString() } : null,
     keywords: run.settings.keywords || [],
     include_comments: run.settings.includeComments,
@@ -226,12 +283,13 @@ async function renderRunsPanel() {
     const when = new Date(r.updatedAt).toLocaleString();
     const active = !!abortController && currentRun && currentRun.id === r.id;
     const canResume = r.status !== "complete" && !active;
+    const batch = r.batch ? ` · run ${r.batch.index + 1} of ${r.batch.total}` : "";
     return `<div class="run-row" data-id="${r.id}">
       <span class="run-badge ${active ? "running" : statusClass(r.status)}">${active ? "running now" : statusLabel(r.status)}</span>
       <span class="run-title">r/${escapeHtml(r.subreddit)}</span>
-      <span class="run-meta">${escapeHtml(scopeText(r.plan))}${r.settings.keywords?.length ? ` · ${r.settings.keywords.length} keyword${r.settings.keywords.length > 1 ? "s" : ""}` : ""} · ${(r.counts?.posts || 0).toLocaleString()} posts${r.settings.includeComments ? ` · ${(r.counts?.comments || 0).toLocaleString()} comments` : ""} · ${when}</span>
+      <span class="run-meta">${escapeHtml(scopeText(r.plan))}${batch}${r.settings.keywords?.length ? ` · ${r.settings.keywords.length} keyword${r.settings.keywords.length > 1 ? "s" : ""}` : ""} · ${(r.counts?.posts || 0).toLocaleString()} posts${r.settings.includeComments ? ` · ${(r.counts?.comments || 0).toLocaleString()} comments` : ""} · ${when}</span>
       <span class="run-actions">
-        ${canResume ? `<button type="button" class="link-button run-resume">${r.status === "complete_with_gaps" ? "Retry failed chunks" : "Resume"}</button>` : ""}
+        ${canResume ? `<button type="button" class="link-button run-resume">${r.status === "complete_with_gaps" ? "Retry failed chunks" : r.status === "queued" ? "Start now" : "Resume"}</button>` : ""}
         <button type="button" class="link-button run-open">Open</button>
         <button type="button" class="link-button run-csv">Download CSV</button>
         <button type="button" class="link-button run-delete">Delete</button>
@@ -682,7 +740,7 @@ function parseKeywords() {
 function selectedWindow() {
   const now = Math.floor(Date.now() / 1000);
   const tf = document.getElementById("timeFilter").value;
-  const days = { day: 1, week: 7, month: 30, year: 365 }[tf];
+  const days = { day: 1, week: 7, month: 30, year: 365, year2: 730, year3: 1095, year5: 1826 }[tf];
   if (days) return { after: now - days * 86400, before: now, all: false };
   if (tf === "custom") {
     const fromVal = document.getElementById("dateFrom").value;
@@ -743,6 +801,7 @@ function updateCollectionEstimate() {
   const passes = Math.max(parseKeywords().length, 1);
   const scopeLabel = scope === "all" ? "the whole community" : scope === "range" ? "this time frame" : "the newest slice";
 
+  document.getElementById("splitRow")?.classList.toggle("hidden", scope === "count");
   if (scope === "count") {
     const totalPosts = Math.min(limit * sortCount * passes, currentAnalysis.estimatedTotalUnique);
     renderEstimateBar(totalPosts, null, scopeLabel);
@@ -836,10 +895,17 @@ function renderRangeCount(count) {
     ? " Comment count is low for posts under ~36 hours old."
     : "";
   const n = count.posts;
-  const tooMany = n > MAX_POSTS_PER_SORT;
-  range.innerHTML = `
+  const rangeEl = document.getElementById("estimateRange"); // re-rendered above; the first handle is detached
+  const segments = win ? splitWindow(win.all ? { after: currentAnalysis.archive?.earliest_post || 1104537600, before: win.before } : win, getSplitBy()) : [win];
+  const perRun = count.perKeyword ? Math.max(...count.perKeyword.map((p) => p.posts)) : n;
+  const tooMany = perRun / segments.length > MAX_POSTS_PER_SORT;
+  const batchNote = segments.length > 1
+    ? `<span class="estimate-batch">Runs as ${segments.length} runs back-to-back: ${segments.map(segmentLabel).join(", ")}.</span>`
+    : "";
+  rangeEl.innerHTML = `
     ${approx}${n.toLocaleString()} posts · ${approx}${count.comments.toLocaleString()} comments ${qualifier}.${recent}
-    ${tooMany ? `<span class="estimate-warn">More than ${MAX_POSTS_PER_SORT.toLocaleString()} — one run cannot hold this; split it into narrower time frames, one run each.</span>` : ""}
+    ${batchNote}
+    ${tooMany ? `<span class="estimate-warn">${segments.length > 1 ? `About ${Math.round(perRun / segments.length).toLocaleString()} posts per run is more` : "More"} than ${MAX_POSTS_PER_SORT.toLocaleString()} — one run cannot hold this; choose a finer split above (per half-year or per quarter) or a narrower time frame.</span>` : ""}
     ${count.perKeyword ? `<span class="estimate-warn">Limit set to the largest keyword's count per pass, so every match is collected.</span>` : ""}
   `;
   if (tooMany) scrapeBtn.disabled = true; else scrapeBtn.disabled = false;
@@ -860,11 +926,18 @@ document.getElementById("keywords").addEventListener("input", () => {
 });
 dateFromInput.addEventListener("change", updateCollectionEstimate);
 dateToInput.addEventListener("change", updateCollectionEstimate);
+document.getElementById("splitBy")?.addEventListener("change", updateCollectionEstimate);
 
 // --- Scrape Orchestration ---
 scrapeBtn.addEventListener("click", () => startScrape());
 
 let currentRun = null;
+
+// reddit_<subreddit>[_<segment>] — batch runs get their segment ("2024_Q3") in the name
+function exportBaseName(run) {
+  const seg = run.plan?.segment ? "_" + run.plan.segment.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") : "";
+  return `reddit_${run.subreddit}${seg}`;
+}
 
 function stripStoreFields(p) {
   const { runId: _r, seq: _s, comments_offloaded: _o, comments_counted: _c, ...post } = p;
@@ -951,7 +1024,8 @@ async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
   const status = (msg) => { subtitle.textContent = msg; };
   const isJson = kind === "json";
   const canGzip = gzip && typeof CompressionStream === "function";
-  const plainName = isJson ? `reddit_${run.subreddit}_full.json` : `reddit_${run.subreddit}_${EXPORTERS[kind].suffix}`;
+  const base = exportBaseName(run);
+  const plainName = isJson ? `${base}_full.json` : `${base}_${EXPORTERS[kind].suffix}`;
   const filename = canGzip ? plainName + ".gz" : plainName;
   const mime = canGzip ? "application/gzip" : (isJson ? "application/json" : EXPORTERS[kind].mime);
   const encoder = new TextEncoder();
@@ -1125,18 +1199,34 @@ async function planRunFromUI() {
     expectedComments = count ? count.comments : null;
     limit = MAX_POSTS_PER_SORT;
   }
-  return {
+  const makeRun = (win, exp, expC, extra = {}) => ({
     id: RunStore.newId(),
     subreddit,
     status: "running",
     createdAt: Date.now(),
     updatedAt: Date.now(),
     settings: { limit, includeComments, includeSelftext, skipNSFW, keywords },
-    plan: { scope, window, limit, queue, expectedPosts: expected, expectedComments },
-    chunks: makeChunks(window, expected),
+    plan: { scope, window: win, limit, queue, expectedPosts: exp, expectedComments: expC, ...extra },
+    chunks: makeChunks(win, exp),
     progress: { chunkIdx: 0, modeIdx: 0, after: null, modeFetched: 0, seq: 0 },
     counts: { posts: 0, comments: 0 },
-  };
+  });
+
+  // A split scope becomes a batch: one run per segment, newest first, the
+  // rest queued; each finished run starts the next by itself.
+  const segments = window ? splitWindow(window, getSplitBy()) : [window];
+  if (segments.length <= 1) return makeRun(window, expected, expectedComments);
+  const batchId = RunStore.newId();
+  const span = window.before - window.after;
+  const runs = segments.map((seg, i) => {
+    const frac = (seg.before - seg.after) / span; // counts are spread by time share
+    const r = makeRun(seg, expected ? Math.max(1, Math.round(expected * frac)) : null, expectedComments ? Math.round(expectedComments * frac) : null, { segment: segmentLabel(seg) });
+    r.batch = { id: batchId, index: i, total: segments.length };
+    if (i > 0) r.status = "queued";
+    return r;
+  });
+  for (const r of runs.slice(1)) await RunStore.saveRun(r);
+  return runs[0];
 }
 
 async function startScrape(opts = {}) {
@@ -1173,7 +1263,7 @@ async function startScrape(opts = {}) {
   scrapeBtn.classList.add("hidden");
   stopBtn.classList.remove("hidden");
   progressFill.style.width = "0%";
-  updateProgress(resumeId ? `Resuming… (${allPosts.length.toLocaleString()} posts already collected)` : "Starting squeeze…");
+  updateProgress(resumeId && allPosts.length ? `Resuming… (${allPosts.length.toLocaleString()} posts already collected)` : run.batch ? `Starting run ${run.batch.index + 1} of ${run.batch.total} (${run.plan.segment})…` : "Starting squeeze…");
   await RunStore.saveRun(run);
 
   // Comment trees are written to IndexedDB and then dropped from memory, so the
@@ -1476,6 +1566,7 @@ async function startScrape(opts = {}) {
   };
 
   let outcome = "complete";
+  let chainTo = null;
   try {
     // A Stop can land mid-thread; finish those before fetching anything new.
     for (const post of allPosts) {
@@ -1558,6 +1649,8 @@ async function startScrape(opts = {}) {
     // The file is what the researcher must not lose: hand it over without asking.
     const est = estimateExportBytes(st);
     if (st.total_posts > 0) await exportRun(run, "combined", { gzip: !!(est && est.combined >= GZIP_DEFAULT_FROM_BYTES) });
+    chainTo = await nextQueuedRun(run);
+    if (chainTo) updateProgress(`Run ${run.batch.index + 1} of ${run.batch.total} done and downloaded — starting ${chainTo.plan.segment || "the next run"}…`, 100);
   } catch (err) {
     const stopped = err.name === "AbortError";
     try { await persistOpen(); } catch { /* best effort */ }
@@ -1580,6 +1673,10 @@ async function startScrape(opts = {}) {
     stopBtn.classList.add("hidden");
     abortController = null;
     renderRunsPanel();
+  }
+  if (chainTo) {
+    await new Promise((r) => setTimeout(r, 1500));
+    await startScrape({ resumeId: chainTo.id });
   }
 }
 
@@ -1860,7 +1957,7 @@ document.getElementById("downloadManifest").addEventListener("click", async () =
   if (!scrapeResult) return;
   const run = scrapeResult.run;
   const manifest = run ? (run.manifest || buildManifest(run, await runStats(run.id))) : { note: "no run metadata (thread download)" };
-  downloadFile(JSON.stringify(manifest, null, 2), `reddit_${scrapeResult.subreddit}_run_report.json`, "application/json");
+  downloadFile(JSON.stringify(manifest, null, 2), `${scrapeResult.run ? exportBaseName(scrapeResult.run) : `reddit_${scrapeResult.subreddit}`}_run_report.json`, "application/json");
 });
 
 document.getElementById("downloadCsv").addEventListener("click", async () => {
