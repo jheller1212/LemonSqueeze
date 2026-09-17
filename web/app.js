@@ -244,7 +244,8 @@ async function renderRunsPanel() {
     row.querySelector(".run-csv").addEventListener("click", async () => {
       // the run list already holds the record; no await before the save dialog
       const run = runs.find((r) => r.id === id);
-      await exportRun(run, "combined", { gesture: true });
+      const gzip = document.getElementById("gzipToggle")?.checked || false;
+      await exportRun(run, "combined", { gesture: true, gzip });
     });
     row.querySelector(".run-delete").addEventListener("click", async () => {
       if (!confirm("Delete this run and its data from this browser? Downloaded files are not affected.")) return;
@@ -257,9 +258,9 @@ async function renderRunsPanel() {
 async function openRun(id) {
   const run = await RunStore.getRun(id);
   if (!run) return;
-  const st = await runStats(id);
+  const st = await runStats(id, run.subreddit);
   currentRun = run;
-  scrapeResult = { subreddit: run.subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), run };
+  scrapeResult = { subreddit: run.subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), stats: st, run };
   showResults(scrapeResult);
   resultsSection.scrollIntoView({ behavior: "smooth" });
 }
@@ -869,9 +870,15 @@ function stripStoreFields(p) {
 
 // Counts, completeness lists and a preview, read from the store in batches —
 // a 100,000-post run never has to sit in memory at once.
-async function runStats(runId) {
-  const st = { total_posts: 0, total_comments: 0, total_score: 0, incomplete: [], notFetched: [], archiveShort: [], reused: 0, preview: [] };
+async function runStats(runId, subreddit = "") {
+  const st = { total_posts: 0, total_comments: 0, total_score: 0, incomplete: [], notFetched: [], archiveShort: [], reused: 0, preview: [], bytes: null };
   await RunStore.iteratePosts(runId, 500, async (batch) => {
+    if (st.bytes === null) {
+      // extrapolate export sizes from the first batch
+      const sample = batch.map(stripStoreFields);
+      const k = st_total(sample);
+      st.bytes = { sample_posts: sample.length, combined: combinedToCSV(sample, false, { subreddit }).length, posts: postsToCSV(sample, false, { subreddit }).length, comments: commentsToCSV(sample, false, { subreddit }).length, sample_comments: k };
+    }
     for (const p of batch) {
       st.total_posts++;
       st.total_comments += p.comments?.length || 0;
@@ -886,6 +893,30 @@ async function runStats(runId) {
   });
   return st;
 }
+
+function st_total(posts) { return posts.reduce((n, p) => n + (p.comments?.length || 0), 0); }
+
+// Export sizes for the whole run, scaled from the sampled batch: post rows by
+// posts, comment rows by comments.
+function estimateExportBytes(st) {
+  if (!st.bytes || !st.bytes.sample_posts) return null;
+  const b = st.bytes;
+  const postScale = st.total_posts / b.sample_posts;
+  const commentScale = b.sample_comments ? st.total_comments / b.sample_comments : postScale;
+  return {
+    combined: Math.round(b.combined * (st.total_comments ? commentScale : postScale)),
+    posts: Math.round(b.posts * postScale),
+    comments: Math.round(b.comments * commentScale),
+  };
+}
+
+function fmtBytes(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + " GB";
+  if (n >= 1e6) return Math.round(n / 1e6) + " MB";
+  return Math.max(1, Math.round(n / 1e3)) + " KB";
+}
+
+const GZIP_DEFAULT_FROM_BYTES = 200e6;
 
 function statsToSummary(st) {
   return {
@@ -911,13 +942,16 @@ const EXPORTERS = {
 //   API — no in-memory file at all (a "Save as" dialog appears);
 // - otherwise (automatic download, other browsers) the file is assembled as
 //   Blob parts and the link is kept alive until the browser has taken it.
-async function exportRun(run, kind, { gesture = false } = {}) {
+async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
   const subtitle = document.getElementById("resultsSubtitle");
   const previous = subtitle.textContent;
   const status = (msg) => { subtitle.textContent = msg; };
   const isJson = kind === "json";
-  const filename = isJson ? `reddit_${run.subreddit}_full.json` : `reddit_${run.subreddit}_${EXPORTERS[kind].suffix}`;
-  const mime = isJson ? "application/json" : EXPORTERS[kind].mime;
+  const canGzip = gzip && typeof CompressionStream === "function";
+  const plainName = isJson ? `reddit_${run.subreddit}_full.json` : `reddit_${run.subreddit}_${EXPORTERS[kind].suffix}`;
+  const filename = canGzip ? plainName + ".gz" : plainName;
+  const mime = canGzip ? "application/gzip" : (isJson ? "application/json" : EXPORTERS[kind].mime);
+  const encoder = new TextEncoder();
 
   // Produce the file as a sequence of text pieces.
   async function produce(emit) {
@@ -951,7 +985,9 @@ async function exportRun(run, kind, { gesture = false } = {}) {
       try {
         handle = await window.showSaveFilePicker({
           suggestedName: filename,
-          types: [{ description: isJson ? "JSON" : "CSV", accept: { [mime]: [isJson ? ".json" : ".csv"] } }],
+          types: [canGzip
+            ? { description: "gzip", accept: { "application/gzip": [".gz"] } }
+            : { description: isJson ? "JSON" : "CSV", accept: { [mime]: [isJson ? ".json" : ".csv"] } }],
         });
       } catch (err) {
         if (err && err.name === "AbortError") return; // user cancelled the dialog
@@ -960,19 +996,38 @@ async function exportRun(run, kind, { gesture = false } = {}) {
       if (handle) {
         const writable = await handle.createWritable();
         try {
-          await produce((text) => writable.write(text));
+          if (canGzip) {
+            // compress on the way to disk; nothing is held in memory
+            const cs = new CompressionStream("gzip");
+            const piping = cs.readable.pipeTo(writable);
+            const w = cs.writable.getWriter();
+            await produce((text) => w.write(encoder.encode(text)));
+            await w.close();
+            await piping;
+          } else {
+            await produce((text) => writable.write(text));
+            await writable.close();
+          }
         } catch (err) {
           try { await writable.abort(); } catch { /* ignore */ }
           throw err;
         }
-        await writable.close();
         status(`Saved ${filename}.`);
         setTimeout(() => { if (subtitle.textContent === `Saved ${filename}.`) subtitle.textContent = previous; }, 6000);
         return;
       }
     }
     const parts = [];
-    await produce((text) => { parts.push(text); });
+    if (canGzip) {
+      const cs = new CompressionStream("gzip");
+      const reading = (async () => { const r = cs.readable.getReader(); for (;;) { const { value, done } = await r.read(); if (done) break; parts.push(value); } })();
+      const w = cs.writable.getWriter();
+      await produce((text) => w.write(encoder.encode(text)));
+      await w.close();
+      await reading;
+    } else {
+      await produce((text) => { parts.push(text); });
+    }
     downloadFile(parts, filename, mime);
   } catch (err) {
     showError(`The download failed: ${err.message || err}. Your data is still saved in Your runs — try again, or use Posts CSV for a smaller file.`);
@@ -1477,26 +1532,27 @@ async function startScrape(opts = {}) {
 
     run.status = outcome;
     run.finishedAt = Date.now();
-    const st = await runStats(run.id);
+    const st = await runStats(run.id, subreddit);
     run.counts = { ...run.counts, posts: st.total_posts, comments: st.total_comments };
     run.manifest = buildManifest(run, st);
     await RunStore.saveRun(run);
     updateProgress(outcome === "complete" ? "Done — every chunk finished." : "Done with gaps — some chunks failed; see the run status below.", 100);
-    scrapeResult = { subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), run };
+    scrapeResult = { subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), stats: st, run };
     showResults(scrapeResult);
     // The file is what the researcher must not lose: hand it over without asking.
-    if (st.total_posts > 0) await exportRun(run, "combined");
+    const est = estimateExportBytes(st);
+    if (st.total_posts > 0) await exportRun(run, "combined", { gzip: !!(est && est.combined >= GZIP_DEFAULT_FROM_BYTES) });
   } catch (err) {
     const stopped = err.name === "AbortError";
     try { await persistOpen(); } catch { /* best effort */ }
     run.status = stopped ? "stopped" : "failed";
-    const st = await runStats(run.id);
+    const st = await runStats(run.id, subreddit);
     run.counts = { ...run.counts, posts: st.total_posts, comments: st.total_comments };
     run.manifest = buildManifest(run, st);
     await RunStore.saveRun(run);
     if (!stopped) showError(err.message);
     if (st.total_posts > 0) {
-      scrapeResult = { subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), run };
+      scrapeResult = { subreddit, posts: null, preview: st.preview, keywordsEnabled: false, summary: statsToSummary(st), stats: st, run };
       updateProgress(`${stopped ? "Stopped" : "Failed"} at ${allPosts.length.toLocaleString()} posts — saved; Resume continues from here.`, (allPosts.length / Math.max(expectedTotal, 1)) * 100);
       showResults(scrapeResult);
     } else {
@@ -1703,6 +1759,17 @@ function showResults(data) {
   }
   summaryDiv.innerHTML = statsHtml;
 
+  const sizes = document.getElementById("exportSizes");
+  const est = data.stats ? estimateExportBytes(data.stats) : null;
+  const gz = document.getElementById("gzipToggle");
+  if (est) {
+    const big = est.combined >= GZIP_DEFAULT_FROM_BYTES;
+    gz.checked = big;
+    sizes.innerHTML = `Approximate sizes — <strong>Combined CSV ≈ ${fmtBytes(est.combined)}</strong> · Posts CSV ≈ ${fmtBytes(est.posts)} · Comments CSV ≈ ${fmtBytes(est.comments)}${big ? `. The combined file repeats each post's text on every comment row; for a run this size, <strong>Posts CSV + Comments CSV</strong> (join on <code>post_id</code>) hold the same 44 columns without the repetition.` : ""}`;
+  } else {
+    sizes.textContent = "";
+    if (gz) gz.checked = false;
+  }
   const statusEl = document.getElementById("runStatus");
   const run = data.run;
   if (run) {
@@ -1769,7 +1836,7 @@ function toDateParts(isoString) {
 // --- Download Handlers ---
 document.getElementById("downloadJson").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "json", { gesture: true }); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "json", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   downloadFile(JSON.stringify(scrapeResult.posts, null, 2), `reddit_${scrapeResult.subreddit}_full.json`, "application/json");
 });
 
@@ -1782,21 +1849,21 @@ document.getElementById("downloadManifest").addEventListener("click", async () =
 
 document.getElementById("downloadCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "posts", { gesture: true }); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "posts", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   const csv = postsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_posts.csv`, "text/csv");
 });
 
 document.getElementById("downloadCommentsCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "comments", { gesture: true }); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "comments", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   const csv = commentsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_comments.csv`, "text/csv");
 });
 
 document.getElementById("downloadCombinedCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "combined", { gesture: true }); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "combined", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   const csv = combinedToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_combined.csv`, "text/csv");
 });
