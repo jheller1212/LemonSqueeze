@@ -960,8 +960,9 @@ async function startScrape(opts = {}) {
     if (!run) { showError("That run is no longer in this browser."); return; }
     allPosts = await RunStore.getPosts(resumeId);
     for (const p of allPosts) if (p.comments_complete !== undefined) p.comments_counted = true;
-    // failed chunks get another go on resume
+    // failed chunks get another go on resume; a finished-but-not-tailed run runs its tail
     for (const c of run.chunks) if (c.status === "failed") { c.status = "pending"; c.error = ""; }
+    if (run.status === "complete" || run.status === "complete_with_gaps") run.progress = { ...run.progress, tail: "done" };
     run.status = "running";
     run.finishedAt = null;
   } else {
@@ -1000,7 +1001,9 @@ async function startScrape(opts = {}) {
   const persistPosts = async (posts) => {
     if (!posts.length) return;
     await RunStore.putPosts(run.id, posts, run.progress.seq);
-    run.progress.seq += posts.filter((p) => p.seq === undefined).length;
+    let n = run.progress.seq;
+    for (const p of posts) if (p.seq === undefined) p.seq = n++;
+    run.progress.seq = n;
     for (const p of posts) {
       if (p.comments_complete !== undefined && !p.comments_offloaded && !p.comments_counted) { commentTotal += p.comments?.length || 0; p.comments_counted = true; }
       if (p.comments_complete !== undefined) offload(p);
@@ -1088,6 +1091,92 @@ async function startScrape(opts = {}) {
     post.comments_complete = walked && (post.num_comments <= 0 || unique.length >= 0.95 * post.num_comments);
   };
 
+  // Comments are swept ONCE over the run window (chunk by chunk, own window
+  // only) and credited to whichever collected post they belong to, so a post
+  // keeps receiving late comments from later chunks. A post is finalised once
+  // the sweep frontier is 30 days past its creation — or at the very end.
+  const openPosts = new Map();      // id → post whose tree is still accumulating
+  const seenComments = new Map();   // id → Set of comment ids credited so far
+  const openPost = (post) => {
+    if (openPosts.has(post.id)) return;
+    openPosts.set(post.id, post);
+    post.comments = post.comments || [];
+    seenComments.set(post.id, new Set(post.comments.map((cm) => cm.id)));
+  };
+  if (includeComments && sweepable) {
+    for (const post of allPosts) {
+      if (post.reused) continue;
+      if (post.comments_complete === undefined || (post.comments_complete === false && post.comments_walked === false)) openPost(post);
+    }
+  }
+  const creditComments = (comments) => {
+    let credited = 0;
+    for (const cm of comments) {
+      const post = openPosts.get(cm.link);
+      if (!post) continue;
+      const seen = seenComments.get(post.id);
+      if (seen.has(cm.id)) continue;
+      seen.add(cm.id);
+      delete cm.link;
+      post.comments.push(cm);
+      credited++;
+    }
+    return credited;
+  };
+  // A post may only be finalised once every chunk its settle window touches has
+  // been swept. Failed chunks are holes: posts reaching into one stay open, and
+  // at the end are persisted as "not fully fetched" so a retry re-opens them.
+  const failedRanges = () => run.chunks.filter((x) => x.status === "failed" && x.after != null).map((x) => [x.after, x.before]);
+  const touchesFailed = (post) => failedRanges().some(([a, b]) => post.created_utc < b && post.created_utc + Archive.SETTLE_SECONDS > a);
+  const sweptThrough = (upTo) => {
+    for (const x of run.chunks) { if (x.i >= upTo.i) break; if (x.status !== "done") return x.after; }
+    return upTo.before;
+  };
+
+  // Finalise open posts whose settle window ended before `frontier` (all of them when force).
+  const finalizeOpen = async (frontier, force, label) => {
+    const ready = [];
+    const heldBack = [];
+    for (const post of openPosts.values()) {
+      if (touchesFailed(post)) { if (force) heldBack.push(post); continue; }
+      if (force || post.created_utc + Archive.SETTLE_SECONDS <= frontier) ready.push(post);
+    }
+    for (const post of heldBack) {
+      post.comments_walked = false;
+      post.comments_complete = false; // not fully fetched: a chunk its comments fall into failed
+      openPosts.delete(post.id); seenComments.delete(post.id);
+    }
+    for (let i = 0; i < heldBack.length; i += 200) await persistPosts(heldBack.slice(i, i + 200));
+    if (!ready.length) return 0;
+    for (const post of ready) { finishPost(post, post.comments, true); openPosts.delete(post.id); seenComments.delete(post.id); }
+    const settled = ready.filter((post) => post.comments_complete === true);
+    for (let i = 0; i < settled.length; i += 200) await persistPosts(settled.slice(i, i + 200));
+    const topups = ready.filter((post) => post.comments_complete !== true && (post.num_comments || 0) > 0);
+    let done = 0;
+    let batch = [];
+    const flush = async () => { const b = batch; batch = []; await persistPosts(b); };
+    try {
+      await Archive.mapConcurrent(topups, 8, async (post) => {
+        const { comments, done: walked } = await Archive.threadComments(post.id, { signal });
+        finishPost(post, comments, walked);
+        done++;
+        batch.push(post);
+        if (batch.length >= 25) await flush();
+        if (done % 10 === 0 || done === topups.length) updateProgress(`${label}completing threads below Reddit's count — ${done.toLocaleString()} of ${topups.length.toLocaleString()}`, null);
+      });
+    } finally {
+      await flush();
+    }
+    const rest = ready.filter((post) => !post.comments_offloaded && post.comments_complete !== undefined);
+    for (let i = 0; i < rest.length; i += 200) await persistPosts(rest.slice(i, i + 200));
+    return ready.length;
+  };
+  // A stop or crash mid-run must not lose credited comments: persist open posts' partial trees.
+  const persistOpen = async () => {
+    const open = Array.from(openPosts.values());
+    for (let i = 0; i < open.length; i += 200) await persistPosts(open.slice(i, i + 200));
+  };
+
   const runChunkDirect = async (c) => {
     const p = run.progress;
     // Stage 1: posts, newest first, cursor persisted per page
@@ -1113,6 +1202,7 @@ async function startScrape(opts = {}) {
           if (!includeSelftext) post.selftext = "";
           const prior = includeComments ? reuse.get(post.id) : null;
           if (prior) { post.comments = prior.comments; post.comments_complete = true; post.reused = true; run.counts.reused++; }
+          else if (includeComments && sweepable) openPost(post);
           seenIds.add(post.id); byId.set(post.id, post); allPosts.push(post); fresh.push(post); collected.push(post); modeFetched++; c.posts++;
           if (modeFetched >= limit) break;
         }
@@ -1128,44 +1218,33 @@ async function startScrape(opts = {}) {
     }
 
     if (!includeComments) return;
+    run.direct = true;
 
-    // Stage 2: comments for this chunk's posts that do not have a complete tree yet
-    const inChunk = (post) => c.after == null || (post.created_utc > c.after && post.created_utc < c.before);
-    const pending = allPosts.filter((post) => inChunk(post) && post.comments_complete !== true);
-    const pendingById = new Map(pending.map((post) => [post.id, post]));
-    const collectedComments = new Map(); // post id → comments[]
-    let sweptComments = 0;
     const tick = (extra) => {
       const pct = Math.min(99, (allPosts.length / Math.max(expectedTotal, 1)) * 100);
       updateProgress(`${chunkLabel(c)}comments: ${extra}`, pct);
     };
 
-    if (sweepable && pending.length > 0) {
-      // 2a. one sweep of the chunk's window plus the settle margin, in parallel shards
-      const sweepBefore = Math.min(nowTs + 1, c.before + Archive.SETTLE_SECONDS + 1);
-      let pages = 0;
-      await Archive.shardedSweep(subreddit, { after: c.after, before: sweepBefore, shards: 4, signal, onPage: async (comments) => {
-        pages++;
-        for (const cm of comments) {
-          if (!pendingById.has(cm.link)) continue;
-          if (!collectedComments.has(cm.link)) collectedComments.set(cm.link, []);
-          collectedComments.get(cm.link).push(cm);
-          sweptComments++;
-        }
-        if (pages % 5 === 0) tick(`sweeping the archive — ${sweptComments.toLocaleString()} comments for ${collectedComments.size.toLocaleString()} of ${pending.length.toLocaleString()} posts`);
-      } });
-      for (const post of pending) finishPost(post, collectedComments.get(post.id) || [], true);
-    }
-
     if (sweepable) {
-      const settled = pending.filter((post) => post.comments_complete === true);
-      for (let i = 0; i < settled.length; i += 200) await persistPosts(settled.slice(i, i + 200));
+      // Stage 2 (sweep path): comments created inside this chunk's own window,
+      // credited to any open post — including posts from earlier chunks.
+      let pages = 0, credited = 0;
+      await Archive.shardedSweep(subreddit, { after: c.after, before: c.before, shards: 4, signal, onPage: async (comments) => {
+        pages++;
+        credited += creditComments(comments);
+        if (pages % 5 === 0) tick(`sweeping ${isoDay(c.after + 1)} → ${isoDay(c.before - 1)} — ${credited.toLocaleString()} comments credited · ${openPosts.size.toLocaleString()} posts awaiting their 30-day settle window`);
+      } });
+      const finalized = await finalizeOpen(sweptThrough(c), false, chunkLabel(c));
+      if (finalized) tick(`${finalized.toLocaleString()} posts finalised · ${openPosts.size.toLocaleString()} still settling`);
+      await persistOpen();
+      return;
     }
 
-    // 2b. per-post walks: everything the sweep did not settle (or all, for keyword/count scopes).
-    // Posts with num_comments 0 and nothing swept are complete by definition.
-    const topups = pending.filter((post) => post.comments_complete !== true && (post.num_comments || 0) > 0);
-    for (const post of pending) if (post.comments_complete !== true && (post.num_comments || 0) === 0) finishPost(post, post.comments || [], true);
+    // Stage 2 (per-post path, keyword and newest-N scopes)
+    const inChunk = (post) => c.after == null || (post.created_utc > c.after && post.created_utc < c.before);
+    const pending = allPosts.filter((post) => inChunk(post) && post.comments_complete !== true);
+    for (const post of pending) if ((post.num_comments || 0) === 0) finishPost(post, post.comments || [], true);
+    const topups = pending.filter((post) => post.comments_complete !== true);
     let done = 0;
     let batch = [];
     const flush = async () => { const b = batch; batch = []; await persistPosts(b); };
@@ -1176,14 +1255,13 @@ async function startScrape(opts = {}) {
         done++;
         batch.push(post);
         if (batch.length >= 25) await flush();
-        if (done % 10 === 0 || done === topups.length) tick(`${sweepable ? "completing" : "fetching"} threads — ${done.toLocaleString()} of ${topups.length.toLocaleString()}`);
+        if (done % 10 === 0 || done === topups.length) tick(`fetching threads — ${done.toLocaleString()} of ${topups.length.toLocaleString()}`);
       });
     } finally {
-      await flush(); // whatever finished is kept, even if a straggler failed
+      await flush();
     }
     const rest = pending.filter((post) => !post.comments_offloaded && post.comments_complete !== undefined);
     for (let i = 0; i < rest.length; i += 200) await persistPosts(rest.slice(i, i + 200));
-    run.direct = true;
   };
 
   let outcome = "complete";
@@ -1237,6 +1315,23 @@ async function startScrape(opts = {}) {
       await RunStore.saveRun(run);
     }
 
+    // Tail: comments that arrived after the run window closed, for posts still settling.
+    if (includeComments && sweepable && run.direct && Archive.isAvailable() && plan.window && run.progress.tail !== "done") {
+      const tailAfter = plan.window.before;
+      const tailBefore = Math.min(nowTs + 1, plan.window.before + Archive.SETTLE_SECONDS + 1);
+      if (openPosts.size > 0 && tailBefore > tailAfter + 1) {
+        let pages = 0, credited = 0;
+        await Archive.shardedSweep(subreddit, { after: tailAfter, before: tailBefore, shards: 4, signal, onPage: async (comments) => {
+          pages++;
+          credited += creditComments(comments);
+          if (pages % 5 === 0) updateProgress(`Late comments after the window: ${credited.toLocaleString()} credited to ${openPosts.size.toLocaleString()} settling posts`, 99);
+        } });
+      }
+      await finalizeOpen(Infinity, true, "");
+      run.progress = { ...run.progress, tail: "done" };
+      await RunStore.saveRun(run);
+    }
+
     run.status = outcome;
     run.finishedAt = Date.now();
     const finalPosts = await storedPosts(run.id);
@@ -1252,6 +1347,7 @@ async function startScrape(opts = {}) {
     }
   } catch (err) {
     const stopped = err.name === "AbortError";
+    try { await persistOpen(); } catch { /* best effort */ }
     run.status = stopped ? "stopped" : "failed";
     const partial = await storedPosts(run.id);
     run.counts = { ...run.counts, posts: partial.length, comments: partial.reduce((n, p) => n + (p.comments?.length || 0), 0) };
