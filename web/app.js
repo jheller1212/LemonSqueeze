@@ -864,6 +864,8 @@ function updateCollectionEstimate() {
 }
 
 // The prominent summary above the Squeeze button. null = still counting.
+const SQUEEZE_NOTE_DEFAULT = document.getElementById("squeezeNote")?.textContent || "";
+
 function renderEstimateBar(posts, comments, scopeLabel) {
   const el = document.getElementById("collectionEstimate");
   const includeComments = document.getElementById("includeComments").checked;
@@ -889,11 +891,19 @@ function renderEstimateBar(posts, comments, scopeLabel) {
     <p class="estimate-range" id="estimateRange">${known ? "" : "Counting… you can start now; the count only sizes the estimate and the run collects every match either way."}</p>
     <p class="estimate-hint">Progress is saved automatically — you can close this tab and resume later.</p>
   `;
+  // The button is always a plain call to action; "count still running" in its
+  // label read as "the scrape is running" and nobody clicked it.
   const label = scrapeBtn.querySelector(".btn-text");
   if (label) {
     label.textContent = known
       ? `Squeeze ${posts.toLocaleString()} posts · ${eta}${includeComments ? " with comments" : ""}`
-      : "Squeeze Data now · count still running";
+      : "Squeeze Data";
+  }
+  const note = document.getElementById("squeezeNote");
+  if (note) {
+    note.textContent = known
+      ? SQUEEZE_NOTE_DEFAULT
+      : "The post count is still loading — click Squeeze anyway; the count only sizes the estimate, the run collects every match.";
   }
 }
 
