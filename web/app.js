@@ -242,8 +242,9 @@ async function renderRunsPanel() {
     row.querySelector(".run-resume")?.addEventListener("click", () => startScrape({ resumeId: id }));
     row.querySelector(".run-open").addEventListener("click", () => openRun(id));
     row.querySelector(".run-csv").addEventListener("click", async () => {
-      const run = await RunStore.getRun(id);
-      await exportRun(run, "combined");
+      // the run list already holds the record; no await before the save dialog
+      const run = runs.find((r) => r.id === id);
+      await exportRun(run, "combined", { gesture: true });
     });
     row.querySelector(".run-delete").addEventListener("click", async () => {
       if (!confirm("Delete this run and its data from this browser? Downloaded files are not affected.")) return;
@@ -905,37 +906,78 @@ const EXPORTERS = {
   comments: { fn: commentsToCSV, suffix: "comments.csv", mime: "text/csv" },
 };
 
-async function exportRun(run, kind) {
+// Two ways to hand over a file that may be hundreds of MB:
+// - from a click, Chrome/Edge can stream straight to disk via the save-file
+//   API — no in-memory file at all (a "Save as" dialog appears);
+// - otherwise (automatic download, other browsers) the file is assembled as
+//   Blob parts and the link is kept alive until the browser has taken it.
+async function exportRun(run, kind, { gesture = false } = {}) {
   const subtitle = document.getElementById("resultsSubtitle");
   const previous = subtitle.textContent;
-  const parts = [];
-  let n = 0;
   const status = (msg) => { subtitle.textContent = msg; };
-  try {
-    if (kind === "json") {
-      parts.push("[\n");
+  const isJson = kind === "json";
+  const filename = isJson ? `reddit_${run.subreddit}_full.json` : `reddit_${run.subreddit}_${EXPORTERS[kind].suffix}`;
+  const mime = isJson ? "application/json" : EXPORTERS[kind].mime;
+
+  // Produce the file as a sequence of text pieces.
+  async function produce(emit) {
+    let n = 0;
+    if (isJson) {
+      await emit("[\n");
       let first = true;
       await RunStore.iteratePosts(run.id, 500, async (batch) => {
-        for (const p of batch) { parts.push((first ? "" : ",\n") + JSON.stringify(stripStoreFields(p), null, 2)); first = false; }
+        for (const p of batch) { await emit((first ? "" : ",\n") + JSON.stringify(stripStoreFields(p), null, 2)); first = false; }
         n += batch.length;
         status(`Preparing download… ${n.toLocaleString()} posts`);
       });
-      parts.push("\n]\n");
-      downloadFile(parts, `reddit_${run.subreddit}_full.json`, "application/json");
+      await emit("\n]\n");
     } else {
-      const { fn, suffix, mime } = EXPORTERS[kind];
+      const { fn } = EXPORTERS[kind];
       let first = true;
       await RunStore.iteratePosts(run.id, 500, async (batch) => {
-        parts.push(fn(batch.map(stripStoreFields), false, { header: first, subreddit: run.subreddit }) + "\n");
+        await emit(fn(batch.map(stripStoreFields), false, { header: first, subreddit: run.subreddit }) + "\n");
         first = false;
         n += batch.length;
         status(`Preparing download… ${n.toLocaleString()} posts`);
       });
-      if (first) parts.push(fn([], false, { subreddit: run.subreddit }) + "\n");
-      downloadFile(parts, `reddit_${run.subreddit}_${suffix}`, mime);
+      if (first) await emit(fn([], false, { subreddit: run.subreddit }) + "\n");
     }
+  }
+
+  try {
+    // Streaming to disk: must start inside the click, before any await.
+    if (gesture && typeof window.showSaveFilePicker === "function") {
+      let handle;
+      try {
+        handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: isJson ? "JSON" : "CSV", accept: { [mime]: [isJson ? ".json" : ".csv"] } }],
+        });
+      } catch (err) {
+        if (err && err.name === "AbortError") return; // user cancelled the dialog
+        handle = null; // API refused (e.g. cross-origin iframe): fall back to a Blob
+      }
+      if (handle) {
+        const writable = await handle.createWritable();
+        try {
+          await produce((text) => writable.write(text));
+        } catch (err) {
+          try { await writable.abort(); } catch { /* ignore */ }
+          throw err;
+        }
+        await writable.close();
+        status(`Saved ${filename}.`);
+        setTimeout(() => { if (subtitle.textContent === `Saved ${filename}.`) subtitle.textContent = previous; }, 6000);
+        return;
+      }
+    }
+    const parts = [];
+    await produce((text) => { parts.push(text); });
+    downloadFile(parts, filename, mime);
+  } catch (err) {
+    showError(`The download failed: ${err.message || err}. Your data is still saved in Your runs — try again, or use Posts CSV for a smaller file.`);
   } finally {
-    subtitle.textContent = previous;
+    if (subtitle.textContent.startsWith("Preparing download")) subtitle.textContent = previous;
   }
 }
 
@@ -1727,7 +1769,7 @@ function toDateParts(isoString) {
 // --- Download Handlers ---
 document.getElementById("downloadJson").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "json"); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "json", { gesture: true }); return; }
   downloadFile(JSON.stringify(scrapeResult.posts, null, 2), `reddit_${scrapeResult.subreddit}_full.json`, "application/json");
 });
 
@@ -1740,21 +1782,21 @@ document.getElementById("downloadManifest").addEventListener("click", async () =
 
 document.getElementById("downloadCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "posts"); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "posts", { gesture: true }); return; }
   const csv = postsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_posts.csv`, "text/csv");
 });
 
 document.getElementById("downloadCommentsCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "comments"); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "comments", { gesture: true }); return; }
   const csv = commentsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_comments.csv`, "text/csv");
 });
 
 document.getElementById("downloadCombinedCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
-  if (scrapeResult.run) { await exportRun(scrapeResult.run, "combined"); return; }
+  if (scrapeResult.run) { await exportRun(scrapeResult.run, "combined", { gesture: true }); return; }
   const csv = combinedToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `reddit_${scrapeResult.subreddit}_combined.csv`, "text/csv");
 });
@@ -1765,8 +1807,12 @@ function downloadFile(content, filename, mimeType) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  // Revoking at once breaks large downloads: the browser may not have started
+  // reading the blob yet. Keep the URL alive well past the hand-over.
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 10 * 60 * 1000);
 }
 
 function csvEscape(val) {
