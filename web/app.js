@@ -222,9 +222,10 @@ async function renderRunsPanel() {
   }
   list.innerHTML = runs.map((r) => {
     const when = new Date(r.updatedAt).toLocaleString();
-    const canResume = r.status !== "complete";
+    const active = !!abortController && currentRun && currentRun.id === r.id;
+    const canResume = r.status !== "complete" && !active;
     return `<div class="run-row" data-id="${r.id}">
-      <span class="run-badge ${statusClass(r.status)}">${statusLabel(r.status)}</span>
+      <span class="run-badge ${active ? "running" : statusClass(r.status)}">${active ? "running now" : statusLabel(r.status)}</span>
       <span class="run-title">r/${escapeHtml(r.subreddit)}</span>
       <span class="run-meta">${escapeHtml(scopeText(r.plan))}${r.settings.keywords?.length ? ` · ${r.settings.keywords.length} keyword${r.settings.keywords.length > 1 ? "s" : ""}` : ""} · ${(r.counts?.posts || 0).toLocaleString()} posts${r.settings.includeComments ? ` · ${(r.counts?.comments || 0).toLocaleString()} comments` : ""} · ${when}</span>
       <span class="run-actions">
@@ -1014,11 +1015,32 @@ async function startScrape(opts = {}) {
 
   const chunkLabel = (c) => run.chunks.length > 1 ? `Chunk ${c.i + 1}/${run.chunks.length} (${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}) · ` : "";
 
+  // Time left: from the measured pace of chunks finished in this session; before
+  // the first one finishes, from the pre-run estimate scaled to what is left.
+  const chunkTimes = [];
+  let chunkStartedAt = Date.now();
+  const etaLeft = (c) => {
+    const remainingChunks = run.chunks.filter((x) => x.status !== "done" && x.i > c.i).length;
+    let seconds;
+    if (chunkTimes.length) {
+      const avg = chunkTimes.reduce((a, b) => a + b, 0) / chunkTimes.length / 1000;
+      const currentElapsed = (Date.now() - chunkStartedAt) / 1000;
+      seconds = remainingChunks * avg + Math.max(avg - currentElapsed, avg * 0.15);
+    } else {
+      const doneChunks = run.chunks.filter((x) => x.status === "done").length;
+      const share = Math.max(0.05, 1 - doneChunks / Math.max(run.chunks.length, 1));
+      seconds = estimateTime(Math.round(expectedTotal * share), includeComments, plan.expectedComments != null ? Math.round(plan.expectedComments * share) : null);
+    }
+    return formatDuration(Math.max(5, Math.round(seconds)));
+  };
+  const overallPct = (c) => {
+    const done = run.chunks.filter((x) => x.status === "done").length;
+    return Math.min(99, ((done + 0.5) / Math.max(run.chunks.length, 1)) * 100);
+  };
+
   const progressLine = (c, mode, extra) => {
     const done = allPosts.length;
-    const pct = Math.min(99, (done / Math.max(expectedTotal, 1)) * 100);
-    const remaining = Math.max(expectedTotal - done, 0);
-    updateProgress(`${chunkLabel(c)}${mode.label}: ${done.toLocaleString()} posts collected (${formatDuration(estimateTime(remaining, includeComments))} left)${extra || ""}`, pct);
+    updateProgress(`${chunkLabel(c)}${mode.label}: ${done.toLocaleString()} posts collected · ${etaLeft(c)} left${extra || ""}`, overallPct(c));
   };
 
   // One chunk: every queue mode, paginated, from the saved cursor.
@@ -1221,8 +1243,7 @@ async function startScrape(opts = {}) {
     run.direct = true;
 
     const tick = (extra) => {
-      const pct = Math.min(99, (allPosts.length / Math.max(expectedTotal, 1)) * 100);
-      updateProgress(`${chunkLabel(c)}comments: ${extra}`, pct);
+      updateProgress(`${chunkLabel(c)}comments: ${extra} · ${etaLeft(c)} left`, overallPct(c));
     };
 
     if (sweepable) {
@@ -1277,6 +1298,7 @@ async function startScrape(opts = {}) {
       if (c.status === "done") continue;
       if (c.i !== run.progress.chunkIdx) run.progress = { ...run.progress, chunkIdx: c.i, modeIdx: 0, after: null, modeFetched: 0 };
       c.status = "running";
+      chunkStartedAt = Date.now();
       let attempt = 0;
       while (true) {
         try {
@@ -1291,6 +1313,7 @@ async function startScrape(opts = {}) {
           }
           c.status = "done";
           c.error = "";
+          chunkTimes.push(Date.now() - chunkStartedAt);
           break;
         } catch (err) {
           if (err.name === "AbortError") throw err;
@@ -1313,6 +1336,7 @@ async function startScrape(opts = {}) {
       }
       run.progress = { ...run.progress, chunkIdx: c.i + 1, modeIdx: 0, after: null, modeFetched: 0 };
       await RunStore.saveRun(run);
+      renderRunsPanel();
     }
 
     // Tail: comments that arrived after the run window closed, for posts still settling.
