@@ -125,6 +125,9 @@
                 <select id="timeFilter" title="Time range for post collection">
                   <option value="all" hidden>All time</option>
                   <option value="year" selected>Past year</option>
+                  <option value="year2">Past 2 years</option>
+                  <option value="year3">Past 3 years</option>
+                  <option value="year5">Past 5 years</option>
                   <option value="month">Past month</option>
                   <option value="week">Past week</option>
                   <option value="day">Today</option>
@@ -149,6 +152,20 @@
             </span>
             <span class="scope-summary" id="scopeCountSummary">—</span>
           </label>
+        </div>
+
+        <div class="split-row" id="splitRow">
+          <label for="splitBy">Run this scope as
+            <span class="select-wrapper">
+              <select id="splitBy" title="Split the time frame into several runs that execute one after another">
+                <option value="none" selected>a single run</option>
+                <option value="year">one run per calendar year</option>
+                <option value="half">one run per half-year</option>
+                <option value="quarter">one run per quarter</option>
+              </select>
+            </span>
+          </label>
+          <span class="split-note" id="splitNote">Several runs execute one after another in this tab, newest first: each finishes, downloads its file and the next starts by itself. Nothing to come back for — if the browser asks whether this site may download several files, allow it.</span>
         </div>
 
         <div class="options-grid">
