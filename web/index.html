@@ -248,6 +248,16 @@
         </div>
 
         <div id="runStatus" class="run-status"></div>
+        <details id="runLog" class="run-log hidden">
+          <summary id="runLogSummary">Run log</summary>
+          <p class="run-log-hint">Every step of this run with timings, archive back-offs and errors. Nothing leaves your browser unless you click “Send log” — that sends this log (no post content) to the tool's maintainer to diagnose slow or failed runs.</p>
+          <div class="run-log-actions">
+            <button type="button" class="link-button" id="runLogDownload">Download log (JSON)</button>
+            <button type="button" class="link-button" id="runLogSend">Send log to the maintainer</button>
+            <span id="runLogSent" class="run-log-sent"></span>
+          </div>
+          <pre id="runLogText" class="run-log-text"></pre>
+        </details>
         <div id="summary" class="stats-grid"></div>
 
         <p id="exportSizes" class="export-sizes"></p>
@@ -305,6 +315,7 @@
   <script type="module" src="mappers.js"></script>
   <script defer src="runs.js"></script>
   <script defer src="archive.js"></script>
+  <script defer src="runlog.js"></script>
   <script defer src="app.js"></script>
 </body>
 </html>

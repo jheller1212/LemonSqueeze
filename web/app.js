@@ -262,6 +262,7 @@ function buildManifest(run, st) {
     posts_not_fully_fetched: notFetched,
     posts_archive_below_reddit_count: archiveShort,
     completeness_note: "post_comments_complete is true when the archive was walked to the end AND holds at least 95% of Reddit's num_comments. Posts listed under posts_archive_below_reddit_count were walked to the end; the archive simply holds fewer comments than Reddit counted (removed before archiving). Posts under posts_not_fully_fetched were interrupted; Resume finishes them.",
+    log_summary: RunLog.summary(run),
     started_at: new Date(run.createdAt).toISOString(),
     finished_at: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
     source: "Arctic Shift archive (https://arctic-shift.photon-reddit.com)",
@@ -365,6 +366,7 @@ async function apiCall(body, maxRetries = 5, { background = false } = {}) {
     const errMsg = data.error || `Server error (${resp.status})`;
     if (attempt < maxRetries && (resp.status === 429 || resp.status >= 500 || /rate limit|timeout|slow down/i.test(errMsg))) {
       const wait = Math.min(5000 * 2 ** attempt, 60000);
+      RunLog.event("warn", "server_retry", { action: body.action, status: resp.status, error: errMsg.slice(0, 120), wait_s: wait / 1000, attempt: attempt + 1 });
       if (!background) updateProgress(`Data source rate-limited. Waiting ${wait / 1000}s and retrying...`);
       await new Promise((r) => setTimeout(r, wait));
       continue;
@@ -452,6 +454,7 @@ function updateProgress(message, percent = null) {
 function showError(msg) {
   errorSection.classList.remove("hidden");
   errorText.textContent = msg;
+  RunLog.event("error", "ui_error", { error: String(msg).slice(0, 300) });
 }
 
 // A subreddit name is 2-21 letters/digits/underscores (optionally r/ or a
@@ -1067,6 +1070,7 @@ const EXPORTERS = {
 // - otherwise (automatic download, other browsers) the file is assembled as
 //   Blob parts and the link is kept alive until the browser has taken it.
 async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
+  if (!RunLog.current()) RunLog.attach(run);
   const subtitle = document.getElementById("resultsSubtitle");
   const previous = subtitle.textContent;
   const status = (msg) => { subtitle.textContent = msg; };
@@ -1138,6 +1142,7 @@ async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
           throw err;
         }
         status(`Saved ${filename}.`);
+        RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "save-file dialog" });
         setTimeout(() => { if (subtitle.textContent === `Saved ${filename}.`) subtitle.textContent = previous; }, 6000);
         return;
       }
@@ -1154,7 +1159,9 @@ async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
       await produce((text) => { parts.push(text); });
     }
     downloadFile(parts, filename, mime);
+    RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "download", parts: parts.length });
   } catch (err) {
+    RunLog.event("error", "export_error", { kind, filename, ...RunLog.errorInfo(err) });
     showError(`The download failed: ${err.message || err}. Your data is still saved in Your runs — try again, or use Posts CSV for a smaller file.`);
   } finally {
     if (subtitle.textContent.startsWith("Preparing download")) subtitle.textContent = previous;
@@ -1243,6 +1250,9 @@ async function planRunFromUI() {
         count = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), COUNT_WAIT_MS))]);
       }
     }
+    RunLog.event("info", "count", count
+      ? { posts: count.posts, comments: count.comments, exact: !!count.exact, rough: !!count.rough, keywords: keywords.length }
+      : { result: keywords.length ? "not waited for (keyword scope)" : "not available within the wait; chunking by time", keywords: keywords.length });
     expected = count ? count.posts : null;
     expectedComments = count ? count.comments : null;
     limit = MAX_POSTS_PER_SORT;
@@ -1298,6 +1308,15 @@ async function startScrape(opts = {}) {
   currentRun = run;
   const { subreddit, settings, plan } = run;
   const { limit, includeComments, includeSelftext, skipNSFW } = settings;
+  RunLog.attach(run);
+  const runStartedAt = Date.now();
+  const archiveStatsAt = { requests: Archive.stats.requests, retries: Archive.stats.retries, shed: Archive.stats.shed };
+  RunLog.event("info", resumeId ? "resume" : "start", {
+    subreddit, scope: plan.scope, window: plan.window ? `${isoDay(plan.window.after)} → ${isoDay(plan.window.before)}` : null,
+    keywords: settings.keywords?.length || 0, sorts: plan.queue.map((q) => q.sort).join(","), include_comments: includeComments,
+    chunks: run.chunks.length, expected_posts: plan.expectedPosts, batch: run.batch ? `${run.batch.index + 1}/${run.batch.total}` : undefined,
+    posts_so_far: allPosts.length, direct_archive: Archive.isAvailable(), persistent_store: RunStore.isPersistent(), ...RunLog.env(),
+  });
   const seenIds = new Set(allPosts.map((p) => p.id));
   const byId = new Map(allPosts.map((p) => [p.id, p]));
   const batchSize = includeComments ? 10 : 100;
@@ -1578,12 +1597,14 @@ async function startScrape(opts = {}) {
       // Stage 2 (sweep path): comments created inside this chunk's own window,
       // credited to any open post — including posts from earlier chunks.
       let pages = 0, credited = 0;
+      RunLog.event("debug", "sweep_start", { chunk: c.i + 1, open_posts: openPosts.size });
       await Archive.shardedSweep(subreddit, { after: c.after, before: c.before, shards: 4, signal, onPage: async (comments) => {
         pages++;
         credited += creditComments(comments);
         if (pages % 5 === 0) tick(`sweeping ${isoDay(c.after + 1)} → ${isoDay(c.before - 1)} — ${credited.toLocaleString()} comments credited · ${openPosts.size.toLocaleString()} posts awaiting their 30-day settle window`);
       } });
       const finalized = await finalizeOpen(sweptThrough(c), false, chunkLabel(c));
+      RunLog.event("debug", "sweep_done", { chunk: c.i + 1, pages, comments_credited: credited, posts_finalised: finalized || 0, still_settling: openPosts.size });
       if (finalized) tick(`${finalized.toLocaleString()} posts finalised · ${openPosts.size.toLocaleString()} still settling`);
       await persistOpen();
       return;
@@ -1594,6 +1615,7 @@ async function startScrape(opts = {}) {
     const pending = allPosts.filter((post) => inChunk(post) && post.comments_complete !== true);
     for (const post of pending) if ((post.num_comments || 0) === 0) finishPost(post, post.comments || [], true);
     const topups = pending.filter((post) => post.comments_complete !== true);
+    RunLog.event("debug", "threads_start", { chunk: c.i + 1, posts_in_chunk: pending.length, threads_to_fetch: topups.length });
     let done = 0;
     let batch = [];
     const flush = async () => { const b = batch; batch = []; await persistPosts(b); };
@@ -1629,6 +1651,10 @@ async function startScrape(opts = {}) {
       c.status = "running";
       chunkStartedAt = Date.now();
       let attempt = 0;
+      const chunkTag = { chunk: `${c.i + 1}/${run.chunks.length}`, from: c.after === null ? null : isoDay(c.after + 1), to: c.before === null ? null : isoDay(c.before - 1) };
+      const postsBefore = allPosts.length;
+      const reqBefore = Archive.stats.requests;
+      RunLog.event("info", "chunk_start", { ...chunkTag, resumed_at: run.progress.after ? isoDay(run.progress.after) : undefined });
       while (true) {
         try {
           if (Archive.isAvailable()) {
@@ -1643,14 +1669,17 @@ async function startScrape(opts = {}) {
           c.status = "done";
           c.error = "";
           chunkTimes.push(Date.now() - chunkStartedAt);
+          RunLog.event("info", "chunk_done", { ...chunkTag, ms: Date.now() - chunkStartedAt, posts: allPosts.length - postsBefore, posts_total: allPosts.length, comments_total: run.counts.comments, requests: Archive.stats.requests - reqBefore, path: run.direct ? "browser→archive" : "server", attempts: attempt + 1 });
           break;
         } catch (err) {
           if (err.name === "AbortError") throw err;
           attempt++;
           c.error = String(err.message || err).slice(0, 200);
+          RunLog.event("error", "chunk_error", { ...chunkTag, attempt, ...RunLog.errorInfo(err), posts_total: allPosts.length });
           if (attempt >= CHUNK_ATTEMPTS) {
             c.status = "failed";
             outcome = "complete_with_gaps";
+            RunLog.event("error", "chunk_failed", { ...chunkTag, after_attempts: attempt });
             break;
           }
           const wait = 20000 * attempt;
@@ -1689,6 +1718,8 @@ async function startScrape(opts = {}) {
     run.finishedAt = Date.now();
     const st = await runStats(run.id, subreddit);
     run.counts = { ...run.counts, posts: st.total_posts, comments: st.total_comments };
+    RunLog.event("info", "finished", { status: outcome, posts: st.total_posts, comments: st.total_comments, incomplete_comment_posts: st.incomplete.length, session_min: Math.round((Date.now() - runStartedAt) / 60000),
+      archive_requests: Archive.stats.requests - archiveStatsAt.requests, archive_retries: Archive.stats.retries - archiveStatsAt.retries, archive_shed: Archive.stats.shed - archiveStatsAt.shed, waited_min: Math.round((run.logStats?.waitMs || 0) / 60000) });
     run.manifest = buildManifest(run, st);
     await RunStore.saveRun(run);
     updateProgress(outcome === "complete" ? "Done — every chunk finished." : "Done with gaps — some chunks failed; see the run status below.", 100);
@@ -1698,6 +1729,7 @@ async function startScrape(opts = {}) {
     const est = estimateExportBytes(st);
     if (st.total_posts > 0) await exportRun(run, "combined", { gzip: !!(est && est.combined >= GZIP_DEFAULT_FROM_BYTES) });
     chainTo = await nextQueuedRun(run);
+    if (chainTo) RunLog.event("info", "chain", { next: chainTo.plan.segment || chainTo.id });
     if (chainTo) updateProgress(`Run ${run.batch.index + 1} of ${run.batch.total} done and downloaded — starting ${chainTo.plan.segment || "the next run"}…`, 100);
   } catch (err) {
     const stopped = err.name === "AbortError";
@@ -1705,6 +1737,8 @@ async function startScrape(opts = {}) {
     run.status = stopped ? "stopped" : "failed";
     const st = await runStats(run.id, subreddit);
     run.counts = { ...run.counts, posts: st.total_posts, comments: st.total_comments };
+    RunLog.event(stopped ? "warn" : "error", stopped ? "stopped" : "failed", { ...(stopped ? {} : RunLog.errorInfo(err)), posts: st.total_posts, comments: st.total_comments, chunk: run.progress.chunkIdx + 1, session_min: Math.round((Date.now() - runStartedAt) / 60000),
+      archive_requests: Archive.stats.requests - archiveStatsAt.requests, archive_shed: Archive.stats.shed - archiveStatsAt.shed, waited_min: Math.round((run.logStats?.waitMs || 0) / 60000) });
     run.manifest = buildManifest(run, st);
     await RunStore.saveRun(run);
     if (!stopped) showError(err.message);
@@ -1720,7 +1754,10 @@ async function startScrape(opts = {}) {
     scrapeBtn.classList.remove("hidden");
     stopBtn.classList.add("hidden");
     abortController = null;
+    try { await RunStore.saveRun(run); } catch { /* best effort */ }
+    RunLog.detach();
     renderRunsPanel();
+    if (scrapeResult && scrapeResult.run && scrapeResult.run.id === run.id) renderRunLog(run);
   }
   if (chainTo) {
     await new Promise((r) => setTimeout(r, 1500));
@@ -1744,6 +1781,7 @@ stopBtn.addEventListener("click", () => {
 // per attempt; say so rather than leave the last progress line frozen.
 if (typeof Archive !== "undefined") {
   Archive.onWait = (why, attempt, ms) => {
+    RunLog.wait(why, attempt, ms);
     if (!abortController) return;
     const base = statusText.textContent.replace(/\s*·\s*archive busy.*$/, "");
     statusText.textContent = `${base} · archive busy (${why}), retry ${attempt} in ${Math.round(ms / 1000)}s`;
@@ -1904,6 +1942,46 @@ function buildStudyYaml(data, subs, keywords) {
 }
 
 // --- Results display ---
+function renderRunLog(run) {
+  const box = document.getElementById("runLog");
+  if (!run || !run.log || !run.log.length) { box.classList.add("hidden"); return; }
+  const sm = RunLog.summary(run);
+  const parts = [`<strong>Run log</strong> — ${sm.events} events`];
+  if (sm.errors) parts.push(`<strong>${sm.errors} error${sm.errors > 1 ? "s" : ""}</strong>`);
+  if (sm.wall_time_min != null) parts.push(`${sm.wall_time_min} min wall time`);
+  if (sm.archive_waits) parts.push(`archive back-offs: ${sm.archive_waits} (${sm.archive_waited_min} min waiting${sm.archive_shed ? `, ${sm.archive_shed} load-shed` : ""})`);
+  if (sm.chunks_done) parts.push(`${sm.chunks_done} chunks, avg ${sm.chunk_avg_min} min${sm.slowest_chunk ? `, slowest ${sm.slowest_chunk.minutes} min (chunk ${sm.slowest_chunk.chunk})` : ""}`);
+  if (sm.last_error) parts.push(`last error: ${escapeHtml(String(sm.last_error.error || sm.last_error.type).slice(0, 80))}`);
+  document.getElementById("runLogSummary").innerHTML = parts.join(" · ");
+  document.getElementById("runLogText").textContent = RunLog.text(run, 400);
+  document.getElementById("runLogSent").textContent = "";
+  box.classList.remove("hidden");
+  box.dataset.runId = run.id;
+}
+
+document.getElementById("runLogDownload").addEventListener("click", async () => {
+  const id = document.getElementById("runLog").dataset.runId;
+  const run = (currentRun && currentRun.id === id) ? currentRun : await RunStore.getRun(id);
+  if (!run) return;
+  downloadFile(JSON.stringify(RunLog.report(run), null, 2), `${exportBaseName(run)}_run_log.json`, "application/json");
+});
+document.getElementById("runLogSend").addEventListener("click", async () => {
+  const id = document.getElementById("runLog").dataset.runId;
+  const run = (currentRun && currentRun.id === id) ? currentRun : await RunStore.getRun(id);
+  const out = document.getElementById("runLogSent");
+  if (!run) return;
+  out.textContent = "Sending…";
+  try {
+    const resp = await fetch("/api/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(RunLog.report(run)) });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    out.textContent = `Sent — reference ${data.id}. Quote it when you report the problem.`;
+    RunLog.event("info", "log_sent", { reference: data.id });
+  } catch (err) {
+    out.textContent = `Could not send (${err.message}). Download the log and attach it instead.`;
+  }
+});
+
 function showResults(data) {
   resultsSection.classList.remove("hidden");
   const s = data.summary;
@@ -1943,6 +2021,7 @@ function showResults(data) {
   }
   const statusEl = document.getElementById("runStatus");
   const run = data.run;
+  renderRunLog(run);
   if (run) {
     const failed = run.chunks.filter((c) => c.status === "failed");
     const chunksNote = run.chunks.length > 1 ? ` ${run.chunks.filter((c) => c.status === "done").length} of ${run.chunks.length} time chunks finished.` : "";

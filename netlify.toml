@@ -12,6 +12,9 @@
 [functions."discover"]
   timeout = 26
 
+[functions."report"]
+  timeout = 10
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"

@@ -1286,6 +1286,14 @@ footer {
 .run-badge.gaps { background: rgba(249, 168, 37, 0.2); color: #b26a00; }
 .run-badge.stopped, .run-badge.running { background: rgba(120, 120, 120, 0.18); color: var(--text-muted); }
 .run-badge.failed { background: rgba(211, 47, 47, 0.16); color: #c62828; }
+.run-log { margin: 0 0 0.9rem; font-size: 0.85rem; }
+.run-log summary { cursor: pointer; color: var(--text-muted); }
+.run-log summary strong { color: var(--text); }
+.run-log-hint { margin: 0.4rem 0; font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
+.run-log-actions { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; align-items: center; margin-bottom: 0.4rem; }
+.run-log-sent { font-size: 0.8rem; color: var(--text-muted); }
+.run-log-text { max-height: 18rem; overflow: auto; font-size: 0.72rem; line-height: 1.45; padding: 0.6rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-surface); white-space: pre; }
+
 .run-status { margin: 0.25rem 0 0.75rem; font-size: 0.9rem; line-height: 1.5; }
 .run-status .run-badge { margin-right: 0.4rem; }
 .progress-hint { font-size: 0.72rem; color: var(--text-dim); margin-top: 0.4rem; }
