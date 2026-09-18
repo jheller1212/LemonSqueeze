@@ -262,6 +262,7 @@ function buildManifest(run, st) {
     posts_not_fully_fetched: notFetched,
     posts_archive_below_reddit_count: archiveShort,
     completeness_note: "post_comments_complete is true when the archive was walked to the end AND holds at least 95% of Reddit's num_comments. Posts listed under posts_archive_below_reddit_count were walked to the end; the archive simply holds fewer comments than Reddit counted (removed before archiving). Posts under posts_not_fully_fetched were interrupted; Resume finishes them.",
+    export_basename: exportBaseName(run),
     log_summary: RunLog.summary(run),
     started_at: new Date(run.createdAt).toISOString(),
     finished_at: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
@@ -985,9 +986,32 @@ scrapeBtn.addEventListener("click", () => startScrape());
 let currentRun = null;
 
 // reddit_<subreddit>[_<segment>] — batch runs get their segment ("2024_Q3") in the name
+// Export names must never collide between runs on the same community, and
+// should say what the file holds without opening it:
+//   reddit_<subreddit>_<scope>[_kw-<keywords>]_<started YYYYMMDD-HHMM>_<kind>
+// scope: "2023-09-18_to_2026-09-18", a batch segment such as "2024_Q3",
+// or "newest-500". The start time makes a re-run of the same scope a new file.
+function safeName(text, max = 40) {
+  return String(text).normalize("NFKD").replace(/[^\w.+-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, max);
+}
+function stamp(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
 function exportBaseName(run) {
-  const seg = run.plan?.segment ? "_" + run.plan.segment.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") : "";
-  return `reddit_${run.subreddit}${seg}`;
+  const plan = run.plan || {};
+  let scope;
+  if (plan.segment) scope = safeName(plan.segment.replace(/\s*→\s*/g, "_to_"));
+  else if (plan.scope === "count" || !plan.window) scope = `newest-${plan.limit || run.settings?.limit || 0}`;
+  else scope = `${isoDay(plan.window.after)}_to_${isoDay(plan.window.before)}`;
+  const kws = run.settings?.keywords || [];
+  const kw = kws.length ? `_kw-${safeName(kws.slice(0, 3).map((k) => k.replace(/["']/g, "")).join("+"), 40)}${kws.length > 3 ? `+${kws.length - 3}more` : ""}` : "";
+  return `reddit_${run.subreddit}_${scope}${kw}_${stamp(run.createdAt || Date.now())}`;
+}
+// Thread downloads and other run-less results: subreddit plus the moment of download.
+function exportBaseNameFor(result) {
+  return result.run ? exportBaseName(result.run) : `reddit_${result.subreddit}_${stamp(Date.now())}`;
 }
 
 function stripStoreFields(p) {
@@ -2087,35 +2111,35 @@ function toDateParts(isoString) {
 document.getElementById("downloadJson").addEventListener("click", async () => {
   if (!scrapeResult) return;
   if (scrapeResult.run) { await exportRun(scrapeResult.run, "json", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
-  downloadFile(JSON.stringify(scrapeResult.posts, null, 2), `reddit_${scrapeResult.subreddit}_full.json`, "application/json");
+  downloadFile(JSON.stringify(scrapeResult.posts, null, 2), `${exportBaseNameFor(scrapeResult)}_full.json`, "application/json");
 });
 
 document.getElementById("downloadManifest").addEventListener("click", async () => {
   if (!scrapeResult) return;
   const run = scrapeResult.run;
   const manifest = run ? (run.manifest || buildManifest(run, await runStats(run.id))) : { note: "no run metadata (thread download)" };
-  downloadFile(JSON.stringify(manifest, null, 2), `${scrapeResult.run ? exportBaseName(scrapeResult.run) : `reddit_${scrapeResult.subreddit}`}_run_report.json`, "application/json");
+  downloadFile(JSON.stringify(manifest, null, 2), `${exportBaseNameFor(scrapeResult)}_run_report.json`, "application/json");
 });
 
 document.getElementById("downloadCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
   if (scrapeResult.run) { await exportRun(scrapeResult.run, "posts", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   const csv = postsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
-  downloadFile(csv, `reddit_${scrapeResult.subreddit}_posts.csv`, "text/csv");
+  downloadFile(csv, `${exportBaseNameFor(scrapeResult)}_posts.csv`, "text/csv");
 });
 
 document.getElementById("downloadCommentsCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
   if (scrapeResult.run) { await exportRun(scrapeResult.run, "comments", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   const csv = commentsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
-  downloadFile(csv, `reddit_${scrapeResult.subreddit}_comments.csv`, "text/csv");
+  downloadFile(csv, `${exportBaseNameFor(scrapeResult)}_comments.csv`, "text/csv");
 });
 
 document.getElementById("downloadCombinedCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;
   if (scrapeResult.run) { await exportRun(scrapeResult.run, "combined", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   const csv = combinedToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
-  downloadFile(csv, `reddit_${scrapeResult.subreddit}_combined.csv`, "text/csv");
+  downloadFile(csv, `${exportBaseNameFor(scrapeResult)}_combined.csv`, "text/csv");
 });
 
 function downloadFile(content, filename, mimeType) {
