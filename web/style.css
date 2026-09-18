@@ -1277,6 +1277,13 @@ footer {
 .runs-header { display: flex; flex-direction: column; gap: 0.2rem; margin-bottom: 0.6rem; }
 .runs-note { font-size: 0.78rem; color: var(--text-muted); }
 .runs-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.run-group { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.5rem 0.6rem 0.6rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: rgba(253, 216, 53, 0.04); }
+.run-group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.9rem; font-size: 0.85rem; padding: 0.1rem 0.15rem 0.25rem; }
+.run-group-head .run-group-title { font-weight: 600; }
+.run-group-head .run-actions { margin-left: auto; display: flex; gap: 0.5rem 0.8rem; align-items: center; flex-wrap: wrap; }
+.btn-download-small { padding: 0.35rem 0.8rem; font-size: 0.8rem; }
+.run-group .run-row { margin-left: 0.6rem; }
+
 .run-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; padding: 0.55rem 0.75rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-surface); font-size: 0.85rem; }
 .run-row .run-title { font-weight: 600; }
 .run-row .run-meta { color: var(--text-muted); }

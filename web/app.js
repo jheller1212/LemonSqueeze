@@ -281,7 +281,7 @@ async function renderRunsPanel() {
   if (!RunStore.isPersistent()) {
     document.getElementById("runsNote").textContent = "Browser storage is unavailable here (private window?), so runs are kept only until this tab closes.";
   }
-  list.innerHTML = runs.map((r) => {
+  const rowHtml = (r) => {
     const when = new Date(r.updatedAt).toLocaleString();
     const active = !!abortController && currentRun && currentRun.id === r.id;
     const canResume = r.status !== "complete" && !active;
@@ -297,7 +297,27 @@ async function renderRunsPanel() {
         <button type="button" class="link-button run-delete">Delete</button>
       </span>
     </div>`;
+  };
+  list.innerHTML = groupRuns(runs).map((g) => {
+    if (g.runs.length < 2) return rowHtml(g.runs[0]);
+    return `<div class="run-group" data-group="${escapeHtml(g.key)}">
+      <div class="run-group-head">
+        <span class="run-group-title">${groupTitle(g)}</span>
+        <span class="run-actions">
+          <button type="button" class="btn-download btn-download-small group-all" title="One merged CSV with run_label and run_id columns, then each run's own CSV">Download all (${g.runs.length} files + merged)</button>
+          <button type="button" class="link-button group-merged" title="One CSV holding every run, with run_label and run_id columns">Merged only</button>
+        </span>
+      </div>
+      ${g.runs.map(rowHtml).join("")}
+    </div>`;
   }).join("");
+  const groups = groupRuns(runs);
+  list.querySelectorAll(".run-group").forEach((el) => {
+    const g = groups.find((x) => x.key === el.dataset.group);
+    if (!g) return;
+    el.querySelector(".group-all").addEventListener("click", () => downloadGroup(g.runs));
+    el.querySelector(".group-merged").addEventListener("click", () => downloadGroup(g.runs, { mergedOnly: true }));
+  });
   panel.classList.remove("hidden");
   list.querySelectorAll(".run-row").forEach((row) => {
     const id = row.dataset.id;
@@ -315,6 +335,37 @@ async function renderRunsPanel() {
       renderRunsPanel();
     });
   });
+}
+
+// Every run's own file plus one merged file, from a single click. The merged
+// file goes first so it can stream to disk through the save dialog while the
+// click still counts as a gesture; the per-run files follow as ordinary
+// downloads (the browser asks once whether the site may download several).
+async function downloadGroup(runs, { mergedOnly = false } = {}) {
+  const gzip = document.getElementById("gzipToggle")?.checked || false;
+  await exportRuns(runs, "combined", { gesture: true, gzip });
+  if (mergedOnly) return;
+  for (const r of runs) await exportRuns([r], "combined", { gesture: false, gzip });
+}
+
+// Runs that belong together: a batch, or several runs of the same community.
+function groupRuns(runs) {
+  const groups = new Map();
+  for (const r of runs) {
+    const key = r.batch ? `batch:${r.batch.id}` : `sub:${r.subreddit}`;
+    if (!groups.has(key)) groups.set(key, { key, batch: !!r.batch, subreddit: r.subreddit, runs: [] });
+    groups.get(key).runs.push(r);
+  }
+  return Array.from(groups.values());
+}
+
+function groupTitle(g) {
+  const withPosts = g.runs.filter((r) => (r.counts?.posts || 0) > 0);
+  const done = g.runs.filter((r) => r.status === "complete" || r.status === "complete_with_gaps").length;
+  const wins = g.runs.map((r) => r.plan?.window).filter(Boolean);
+  const span = wins.length ? ` · ${isoDay(Math.min(...wins.map((w) => w.after)))} → ${isoDay(Math.max(...wins.map((w) => w.before)))}` : "";
+  const kws = g.runs[0]?.settings?.keywords || [];
+  return `${g.batch ? "Batch" : "Runs"} · r/${escapeHtml(g.subreddit)}${span}${kws.length ? ` · ${kws.length} keyword${kws.length > 1 ? "s" : ""}` : ""} · ${g.runs.length} runs, ${done} complete, ${withPosts.reduce((n, r) => n + (r.counts?.posts || 0), 0).toLocaleString()} posts`;
 }
 
 async function openRun(id) {
@@ -1093,14 +1144,34 @@ const EXPORTERS = {
 //   API — no in-memory file at all (a "Save as" dialog appears);
 // - otherwise (automatic download, other browsers) the file is assembled as
 //   Blob parts and the link is kept alive until the browser has taken it.
-async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
+async function exportRun(run, kind, opts = {}) {
+  return exportRuns([run], kind, opts);
+}
+
+// What a merged file calls each run: the batch segment or the scope, plus keywords.
+function runLabel(run) {
+  const kws = run.settings?.keywords || [];
+  return `${run.plan?.segment || scopeText(run.plan || {})}${kws.length ? ` · kw: ${kws.join(" | ")}` : ""}`;
+}
+
+function mergedBaseName(runs) {
+  const subs = Array.from(new Set(runs.map((r) => r.subreddit)));
+  return `reddit_${subs.length === 1 ? subs[0] : subs.length + "subs"}_merged-${runs.length}runs_${stamp(Date.now())}`;
+}
+
+// One file from one or several runs. With several, every row carries
+// run_label and run_id so the runs can be told apart (and `query` says
+// which keyword found the post).
+async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
+  const run = runs[0];
+  const merged = runs.length > 1;
   if (!RunLog.current()) RunLog.attach(run);
   const subtitle = document.getElementById("resultsSubtitle");
   const previous = subtitle.textContent;
   const status = (msg) => { subtitle.textContent = msg; };
   const isJson = kind === "json";
   const canGzip = gzip && typeof CompressionStream === "function";
-  const base = exportBaseName(run);
+  const base = merged ? mergedBaseName(runs) : exportBaseName(run);
   const plainName = isJson ? `${base}_full.json` : `${base}_${EXPORTERS[kind].suffix}`;
   const filename = canGzip ? plainName + ".gz" : plainName;
   const mime = canGzip ? "application/gzip" : (isJson ? "application/json" : EXPORTERS[kind].mime);
@@ -1109,25 +1180,34 @@ async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
   // Produce the file as a sequence of text pieces.
   async function produce(emit) {
     let n = 0;
+    const where = (k) => merged ? `run ${k + 1} of ${runs.length} · ` : "";
     if (isJson) {
       await emit("[\n");
       let first = true;
-      await RunStore.iteratePosts(run.id, 500, async (batch) => {
-        for (const p of batch) { await emit((first ? "" : ",\n") + JSON.stringify(stripStoreFields(p), null, 2)); first = false; }
-        n += batch.length;
-        status(`Preparing download… ${n.toLocaleString()} posts`);
-      });
+      for (let k = 0; k < runs.length; k++) {
+        const r = runs[k];
+        const tag = merged ? { run_label: runLabel(r), run_id: r.id } : {};
+        await RunStore.iteratePosts(r.id, 500, async (batch) => {
+          for (const p of batch) { await emit((first ? "" : ",\n") + JSON.stringify({ ...stripStoreFields(p), ...tag }, null, 2)); first = false; }
+          n += batch.length;
+          status(`Preparing download… ${where(k)}${n.toLocaleString()} posts`);
+        });
+      }
       await emit("\n]\n");
     } else {
       const { fn } = EXPORTERS[kind];
       let first = true;
-      await RunStore.iteratePosts(run.id, 500, async (batch) => {
-        await emit(fn(batch.map(stripStoreFields), false, { header: first, subreddit: run.subreddit }) + "\n");
-        first = false;
-        n += batch.length;
-        status(`Preparing download… ${n.toLocaleString()} posts`);
-      });
-      if (first) await emit(fn([], false, { subreddit: run.subreddit }) + "\n");
+      for (let k = 0; k < runs.length; k++) {
+        const r = runs[k];
+        const extra = merged ? { run_label: runLabel(r), run_id: r.id } : undefined;
+        await RunStore.iteratePosts(r.id, 500, async (batch) => {
+          await emit(fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra }) + "\n");
+          first = false;
+          n += batch.length;
+          status(`Preparing download… ${where(k)}${n.toLocaleString()} posts`);
+        });
+      }
+      if (first) await emit(fn([], false, { subreddit: run.subreddit, extra: merged ? { run_label: "", run_id: "" } : undefined }) + "\n");
     }
   }
 
@@ -1166,7 +1246,7 @@ async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
           throw err;
         }
         status(`Saved ${filename}.`);
-        RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "save-file dialog" });
+        RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "save-file dialog", runs: runs.length });
         setTimeout(() => { if (subtitle.textContent === `Saved ${filename}.`) subtitle.textContent = previous; }, 6000);
         return;
       }
@@ -1183,7 +1263,7 @@ async function exportRun(run, kind, { gesture = false, gzip = false } = {}) {
       await produce((text) => { parts.push(text); });
     }
     downloadFile(parts, filename, mime);
-    RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "download", parts: parts.length });
+    RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "download", parts: parts.length, runs: runs.length });
   } catch (err) {
     RunLog.event("error", "export_error", { kind, filename, ...RunLog.errorInfo(err) });
     showError(`The download failed: ${err.message || err}. Your data is still saved in Your runs — try again, or use Posts CSV for a smaller file.`);
@@ -2180,6 +2260,9 @@ function postsToCSV(posts, keywordsEnabled, opts = {}) {
     headers.push("relevance_score", "matched_categories", "matched_keywords");
   }
 
+  // extra trailing columns, e.g. run_label/run_id in a merged export
+  const extra = opts.extra || {};
+  headers.push(...Object.keys(extra));
   const rows = posts.map((p) => {
     const dp = toDateParts(p.created_datetime);
     const row = {
@@ -2219,7 +2302,7 @@ function postsToCSV(posts, keywordsEnabled, opts = {}) {
       row.matched_categories = (p.matched_categories || []).join("; ");
       row.matched_keywords = JSON.stringify(p.matched_keywords || {});
     }
-    return headers.map((h) => csvEscape(row[h])).join(",");
+    return headers.map((h) => csvEscape(h in row ? row[h] : extra[h])).join(",");
   });
 
   return (opts.header === false ? rows : [headers.join(","), ...rows]).join("\n");
@@ -2246,6 +2329,9 @@ function combinedToCSV(posts, keywordsEnabled, opts = {}) {
                   "comment_relevance_score", "comment_matched_categories", "comment_matched_keywords");
   }
 
+  // extra trailing columns, e.g. run_label/run_id in a merged export
+  const extra = opts.extra || {};
+  headers.push(...Object.keys(extra));
   const rows = [];
   for (const p of posts) {
     const pdp = toDateParts(p.created_datetime);
@@ -2292,7 +2378,7 @@ function combinedToCSV(posts, keywordsEnabled, opts = {}) {
         row.comment_matched_categories = "";
         row.comment_matched_keywords = "";
       }
-      rows.push(headers.map((h) => csvEscape(row[h])).join(","));
+      rows.push(headers.map((h) => csvEscape(h in row ? row[h] : extra[h])).join(","));
     } else {
       for (const c of comments) {
         const cdp = toDateParts(c.created_datetime);
@@ -2322,7 +2408,7 @@ function combinedToCSV(posts, keywordsEnabled, opts = {}) {
           row.comment_matched_categories = (c.matched_categories || []).join("; ");
           row.comment_matched_keywords = JSON.stringify(c.matched_keywords || {});
         }
-        rows.push(headers.map((h) => csvEscape(row[h])).join(","));
+        rows.push(headers.map((h) => csvEscape(h in row ? row[h] : extra[h])).join(","));
       }
     }
   }
@@ -2343,6 +2429,9 @@ function commentsToCSV(posts, keywordsEnabled, opts = {}) {
     headers.push("relevance_score", "matched_categories", "matched_keywords");
   }
 
+  // extra trailing columns, e.g. run_label/run_id in a merged export
+  const extra = opts.extra || {};
+  headers.push(...Object.keys(extra));
   const rows = [];
   for (const p of posts) {
     for (const c of p.comments || []) {
@@ -2376,7 +2465,7 @@ function commentsToCSV(posts, keywordsEnabled, opts = {}) {
         row.matched_categories = (c.matched_categories || []).join("; ");
         row.matched_keywords = JSON.stringify(c.matched_keywords || {});
       }
-      rows.push(headers.map((h) => csvEscape(row[h])).join(","));
+      rows.push(headers.map((h) => csvEscape(h in row ? row[h] : extra[h])).join(","));
     }
   }
 
