@@ -78,6 +78,26 @@
       </div>
       <p id="inputCheck" class="input-check" aria-live="polite"></p>
 
+      <!-- Post-ID list mode -->
+      <details class="ids-block glass-card" id="idsBlock">
+        <summary>
+          <strong>Have a list of post IDs?</strong> Fetch exactly those posts, with their complete comment trees
+          <span class="discover-sub">For the two-step workflow: collect a whole community without comments, filter locally, then fetch comments for the matches only.</span>
+        </summary>
+        <div class="ids-body">
+          <textarea id="idsText" rows="4" class="input-keywords" placeholder="One ID per line — 1n7abcd, t3_1n7abcd, or a full reddit.com link. Commas and spaces work too." spellcheck="false"></textarea>
+          <div class="ids-row">
+            <label class="ids-file">or upload a .txt / .csv (a <code>post_id</code> or <code>id</code> column is used) <input type="file" id="idsFile" accept=".txt,.csv,.tsv,.json" /></label>
+            <label class="toggle-switch"><input type="checkbox" id="idsComments" checked /><span class="toggle-slider"></span><span class="toggle-text">Include comments</span></label>
+          </div>
+          <div class="ids-row">
+            <button type="button" class="btn-scrape" id="idsBtn" disabled><span class="btn-text">Fetch posts by ID</span></button>
+            <span id="idsCount" class="ids-count">Paste or upload IDs to begin.</span>
+          </div>
+          <p class="ids-hint">Runs like any other collection: chunks of 1,000 IDs, saved as it goes, resumable from “Your runs”, standard CSV (the <code>subreddit</code> column comes from each post). IDs the archive does not hold are listed in the run report.</p>
+        </div>
+      </details>
+
       <!-- Thread Result (for single post URL) -->
       <div id="threadCard" class="analysis-card glass-card hidden">
         <div class="analysis-header">
@@ -162,6 +182,7 @@
                 <option value="year">one run per calendar year</option>
                 <option value="half">one run per half-year</option>
                 <option value="quarter">one run per quarter</option>
+                <option value="month">one run per month</option>
               </select>
             </span>
           </label>
