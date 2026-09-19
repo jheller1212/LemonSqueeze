@@ -40,11 +40,22 @@
 
       <!-- Your runs: every collection is saved in this browser as it happens -->
       <div id="resumeBanner" class="runs-panel glass-card hidden">
-        <div class="runs-header">
-          <strong>Your runs</strong>
-          <span class="runs-note" id="runsNote">Saved in this browser as they happen — resume an unfinished run, or download a finished one again.</span>
+        <button type="button" class="runs-bar" id="runsBar" aria-expanded="false" aria-controls="runsBody">
+          <span class="runs-chevron" aria-hidden="true">▸</span>
+          <strong class="runs-title">Your runs</strong>
+          <span class="runs-chips" id="runsChips"></span>
+          <span class="runs-toggle" id="runsToggle">Show</span>
+        </button>
+        <div id="runsBody" class="runs-body" hidden>
+          <div class="runs-toolbar">
+            <label class="runs-control">Sort
+              <span class="select-wrapper"><select id="runsSort"><option value="newest">newest first</option><option value="community">by community</option><option value="status">by status</option></select></span>
+            </label>
+            <label class="runs-control">Filter <input type="search" id="runsFilter" placeholder="community or keyword" autocomplete="off" /></label>
+            <span class="runs-note" id="runsNote">Saved in this browser as they happen. Batches fold into one card — open one to see its runs.</span>
+          </div>
+          <div id="runsList" class="runs-list"></div>
         </div>
-        <div id="runsList" class="runs-list"></div>
       </div>
 
       <!-- Study discovery: describe it, get verified communities + keywords -->

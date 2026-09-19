@@ -275,60 +275,153 @@ function buildManifest(run, st) {
 }
 
 // --- Your runs panel ---
-async function renderRunsPanel() {
-  let runs = [];
-  try { runs = await RunStore.listRuns(); } catch { runs = []; }
-  const panel = document.getElementById("resumeBanner");
-  const list = document.getElementById("runsList");
-  if (!runs.length) { panel.classList.add("hidden"); return; }
-  if (!RunStore.isPersistent()) {
-    document.getElementById("runsNote").textContent = "Browser storage is unavailable here (private window?), so runs are kept only until this tab closes.";
-  }
-  const rowHtml = (r) => {
-    const when = new Date(r.updatedAt).toLocaleString();
-    const active = !!abortController && currentRun && currentRun.id === r.id;
-    const canResume = r.status !== "complete" && !active;
-    const batch = r.batch ? ` · run ${r.batch.index + 1} of ${r.batch.total}` : "";
-    return `<div class="run-row" data-id="${r.id}">
-      <span class="run-badge ${active ? "running" : statusClass(r.status)}">${active ? "running now" : statusLabel(r.status)}</span>
-      <span class="run-title">r/${escapeHtml(r.subreddit)}</span>
-      <span class="run-meta">${escapeHtml(scopeText(r.plan))}${batch}${r.settings.keywords?.length ? ` · ${r.settings.keywords.length} keyword${r.settings.keywords.length > 1 ? "s" : ""}` : ""} · ${(r.counts?.posts || 0).toLocaleString()} posts${r.settings.includeComments ? ` · ${(r.counts?.comments || 0).toLocaleString()} comments` : ""} · ${when}</span>
-      <span class="run-actions">
-        ${canResume ? `<button type="button" class="link-button run-resume">${r.status === "complete_with_gaps" ? "Retry failed chunks" : r.status === "queued" ? "Start now" : "Resume"}</button>` : ""}
-        <button type="button" class="link-button run-open">Open</button>
-        <button type="button" class="link-button run-csv">Download CSV</button>
-        <button type="button" class="link-button run-delete">Delete</button>
-      </span>
-    </div>`;
+// Collapsed to one status line by default so the search field stays at the
+// top however many runs exist. Expanded, the list scrolls inside a bounded
+// box, every batch folds into one card, and the active run is always shown.
+const runsUi = {
+  open: (() => { try { return localStorage.getItem("ls_runs_open") === "1"; } catch { return false; } })(),
+  sort: (() => { try { return localStorage.getItem("ls_runs_sort") || "newest"; } catch { return "newest"; } })(),
+  filter: "",
+  expanded: new Set(),
+  runs: [],
+};
+function rememberRunsUi(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } }
+
+const isDone = (r) => r.status === "complete" || r.status === "complete_with_gaps";
+const needsAttention = (r) => r.status === "failed" || r.status === "stopped";
+const isActive = (r) => !!abortController && currentRun && currentRun.id === r.id;
+
+function splitName(g) {
+  const seg = g.runs.map((r) => r.plan?.segment).find((x) => x && !x.includes("→")) || "";
+  if (/^\d{4}-\d{2}$/.test(seg)) return "per month";
+  if (/ Q\d$/.test(seg)) return "per quarter";
+  if (/ H\d$/.test(seg)) return "per half-year";
+  if (/^\d{4}$/.test(seg)) return "per year";
+  return "";
+}
+
+function groupStats(g) {
+  const count = (st) => g.runs.filter((r) => r.status === st).length;
+  const st = {
+    complete: g.runs.filter(isDone).length, gaps: count("complete_with_gaps"), queued: count("queued"),
+    failed: count("failed"), stopped: count("stopped"), running: g.runs.filter(isActive).length,
+    unfinished: g.runs.filter((r) => r.status === "running" && !isActive(r)).length,
+    posts: g.runs.reduce((n, r) => n + (r.counts?.posts || 0), 0),
+    comments: g.runs.reduce((n, r) => n + (r.counts?.comments || 0), 0),
+    updatedAt: Math.max(...g.runs.map((r) => r.updatedAt || 0)),
+    keywords: g.runs[0]?.settings?.keywords || [],
+    withComments: g.runs.some((r) => r.settings?.includeComments),
   };
-  list.innerHTML = groupRuns(runs).map((g) => {
-    if (g.runs.length < 2) return rowHtml(g.runs[0]);
-    return `<div class="run-group" data-group="${escapeHtml(g.key)}">
-      <div class="run-group-head">
-        <span class="run-group-title">${groupTitle(g)}</span>
-        <span class="run-actions">
-          <button type="button" class="btn-download btn-download-small group-all" title="One merged CSV with run_label and run_id columns, then each run's own CSV">Download all (${g.runs.length} files + merged)</button>
-          <button type="button" class="link-button group-merged" title="One CSV holding every run, with run_label and run_id columns">Merged only</button>
-        </span>
-      </div>
-      ${g.runs.map(rowHtml).join("")}
-    </div>`;
-  }).join("");
-  const groups = groupRuns(runs);
-  list.querySelectorAll(".run-group").forEach((el) => {
-    const g = groups.find((x) => x.key === el.dataset.group);
-    if (!g) return;
-    el.querySelector(".group-all").addEventListener("click", () => downloadGroup(g.runs));
-    el.querySelector(".group-merged").addEventListener("click", () => downloadGroup(g.runs, { mergedOnly: true }));
+  const wins = g.runs.map((r) => r.plan?.window).filter(Boolean);
+  st.span = wins.length ? `${isoDay(Math.min(...wins.map((w) => w.after)))} → ${isoDay(Math.max(...wins.map((w) => w.before)))}` : "";
+  st.status = st.running ? "running" : st.queued ? "queued" : st.failed ? "failed" : st.stopped || st.unfinished ? "stopped" : st.gaps ? "gaps" : "complete";
+  st.label = { running: "running now", queued: `${st.queued} queued`, failed: "failed", stopped: "paused", gaps: "complete with gaps", complete: "complete" }[st.status];
+  return st;
+}
+
+const STATUS_RANK = { running: 0, queued: 1, failed: 2, stopped: 3, gaps: 4, complete: 5 };
+
+function sortGroups(groups) {
+  const key = runsUi.sort;
+  return groups.sort((x, y) => {
+    if (key === "community") return x.subreddit.localeCompare(y.subreddit) || y.stats.updatedAt - x.stats.updatedAt;
+    if (key === "status") return STATUS_RANK[x.stats.status] - STATUS_RANK[y.stats.status] || y.stats.updatedAt - x.stats.updatedAt;
+    return y.stats.updatedAt - x.stats.updatedAt;
   });
-  panel.classList.remove("hidden");
+}
+
+// Inside a group the community is already in the card header, so a row is
+// titled by its segment instead ("2026-08 · run 2 of 37").
+function runRowHtml(r, inGroup = false) {
+  const when = new Date(r.updatedAt).toLocaleString();
+  const active = isActive(r);
+  const canResume = r.status !== "complete" && !active;
+  const batch = r.batch ? ` · run ${r.batch.index + 1} of ${r.batch.total}` : "";
+  const title = inGroup ? escapeHtml(scopeText(r.plan)) : `r/${escapeHtml(r.subreddit)}`;
+  const scope = inGroup ? "" : escapeHtml(scopeText(r.plan));
+  return `<div class="run-row${active ? " active" : ""}" data-id="${r.id}">
+    <span class="run-badge ${active ? "running" : statusClass(r.status)}">${active ? "running now" : statusLabel(r.status)}</span>
+    <span class="run-title">${title}</span>
+    <span class="run-meta">${scope}${batch.replace(/^ · /, scope ? " · " : "")}${r.settings.keywords?.length ? ` · ${r.settings.keywords.length} keyword${r.settings.keywords.length > 1 ? "s" : ""}` : ""} · ${(r.counts?.posts || 0).toLocaleString()} posts${r.settings.includeComments ? ` · ${(r.counts?.comments || 0).toLocaleString()} comments` : ""} · ${when}</span>
+    <span class="run-actions">
+      ${canResume ? `<button type="button" class="link-button run-resume">${r.status === "complete_with_gaps" ? "Retry failed chunks" : r.status === "queued" ? "Start now" : "Resume"}</button>` : ""}
+      <button type="button" class="link-button run-open">Open</button>
+      <button type="button" class="link-button run-csv">Download CSV</button>
+      <button type="button" class="link-button run-delete">Delete</button>
+    </span>
+  </div>`;
+}
+
+function groupCardHtml(g) {
+  const st = g.stats;
+  const open = runsUi.expanded.has(g.key) || st.running > 0;
+  const parts = [];
+  if (st.span) parts.push(st.span);
+  const split = splitName(g);
+  if (split) parts.push(split);
+  if (st.keywords.length) parts.push(`${st.keywords.length} keyword${st.keywords.length > 1 ? "s" : ""}: ${escapeHtml(st.keywords.slice(0, 3).join(", "))}${st.keywords.length > 3 ? "…" : ""}`);
+  const progress = [];
+  progress.push(`${st.complete} of ${g.runs.length} complete`);
+  if (st.queued) progress.push(`${st.queued} queued`);
+  if (st.failed) progress.push(`${st.failed} failed`);
+  if (st.stopped + st.unfinished) progress.push(`${st.stopped + st.unfinished} paused`);
+  parts.push(progress.join(", "));
+  parts.push(`${st.posts.toLocaleString()} posts${st.withComments ? ` · ${st.comments.toLocaleString()} comments` : ""}`);
+  parts.push(new Date(st.updatedAt).toLocaleString());
+  const canContinue = st.queued > 0 && !abortController;
+  return `<div class="run-group${open ? " expanded" : ""}" data-group="${escapeHtml(g.key)}">
+    <div class="run-group-head">
+      <button type="button" class="group-toggle" aria-expanded="${open}"><span class="chev">▸</span>${g.runs.length} runs</button>
+      <span class="run-badge ${statusClass(st.status)}">${st.label}</span>
+      <span class="run-title">r/${escapeHtml(g.subreddit)}</span>
+      <span class="run-meta">${parts.join(" · ")}</span>
+      <span class="run-actions">
+        ${canContinue ? `<button type="button" class="link-button group-continue" title="Start the next queued run; the rest follow by themselves">Continue batch</button>` : ""}
+        <button type="button" class="btn-download btn-download-small group-all" title="One merged CSV with run_label and run_id columns, then each run's own CSV">Download all</button>
+        <button type="button" class="link-button group-merged" title="One CSV holding every run, with run_label and run_id columns">Merged only</button>
+        <button type="button" class="link-button group-delete">Delete batch</button>
+      </span>
+    </div>
+    <div class="run-group-rows"${open ? "" : " hidden"}>${g.runs.map((r) => runRowHtml(r, true)).join("")}</div>
+  </div>`;
+}
+
+function renderRunsChips(runs) {
+  const chips = [];
+  chips.push(`<span class="runs-chip">${runs.length} run${runs.length === 1 ? "" : "s"}</span>`);
+  const active = runs.find(isActive);
+  if (active) chips.push(`<span class="runs-chip live">running now: r/${escapeHtml(active.subreddit)} · ${escapeHtml(active.plan?.segment || scopeText(active.plan))}${active.batch ? ` (run ${active.batch.index + 1} of ${active.batch.total})` : ""}</span>`);
+  const queued = runs.filter((r) => r.status === "queued").length;
+  if (queued) chips.push(`<span class="runs-chip queued">${queued} queued</span>`);
+  const attention = runs.filter(needsAttention).length + runs.filter((r) => r.status === "running" && !isActive(r)).length;
+  if (attention) chips.push(`<span class="runs-chip attention">${attention} paused or failed</span>`);
+  const done = runs.filter(isDone).length;
+  if (done) chips.push(`<span class="runs-chip">${done} complete</span>`);
+  document.getElementById("runsChips").innerHTML = chips.join("");
+}
+
+function renderRunsList() {
+  const list = document.getElementById("runsList");
+  const q = runsUi.filter.trim().toLowerCase();
+  const runs = q
+    ? runsUi.runs.filter((r) => r.subreddit.toLowerCase().includes(q) || (r.settings?.keywords || []).some((k) => k.toLowerCase().includes(q)) || (r.plan?.segment || "").toLowerCase().includes(q))
+    : runsUi.runs;
+  const groups = groupRuns(runs).map((g) => {
+    g.runs.sort((x, y) => (x.batch && y.batch ? x.batch.index - y.batch.index : (y.updatedAt || 0) - (x.updatedAt || 0)));
+    g.stats = groupStats(g);
+    return g;
+  });
+  sortGroups(groups);
+  if (!groups.length) { list.innerHTML = `<p class="runs-empty">No runs match "${escapeHtml(runsUi.filter)}".</p>`; return; }
+  list.innerHTML = groups.map((g) => (g.runs.length < 2 ? runRowHtml(g.runs[0]) : groupCardHtml(g))).join("");
+
   list.querySelectorAll(".run-row").forEach((row) => {
     const id = row.dataset.id;
     row.querySelector(".run-resume")?.addEventListener("click", () => startScrape({ resumeId: id }));
     row.querySelector(".run-open").addEventListener("click", () => openRun(id));
     row.querySelector(".run-csv").addEventListener("click", async () => {
       // the run list already holds the record; no await before the save dialog
-      const run = runs.find((r) => r.id === id);
+      const run = runsUi.runs.find((r) => r.id === id);
       const gzip = document.getElementById("gzipToggle")?.checked || false;
       await exportRun(run, "combined", { gesture: true, gzip });
     });
@@ -338,7 +431,61 @@ async function renderRunsPanel() {
       renderRunsPanel();
     });
   });
+  list.querySelectorAll(".run-group").forEach((el) => {
+    const g = groups.find((x) => x.key === el.dataset.group);
+    if (!g) return;
+    el.querySelector(".group-toggle").addEventListener("click", () => {
+      const rows = el.querySelector(".run-group-rows");
+      const open = rows.hidden;
+      rows.hidden = !open;
+      el.classList.toggle("expanded", open);
+      el.querySelector(".group-toggle").setAttribute("aria-expanded", String(open));
+      if (open) runsUi.expanded.add(g.key); else runsUi.expanded.delete(g.key);
+    });
+    el.querySelector(".group-all").addEventListener("click", () => downloadGroup(g.runs));
+    el.querySelector(".group-merged").addEventListener("click", () => downloadGroup(g.runs, { mergedOnly: true }));
+    el.querySelector(".group-continue")?.addEventListener("click", async () => {
+      const next = g.runs.filter((r) => r.status === "queued").sort((x, y) => x.batch.index - y.batch.index)[0];
+      if (next) startScrape({ resumeId: next.id });
+    });
+    el.querySelector(".group-delete").addEventListener("click", async () => {
+      if (!confirm(`Delete all ${g.runs.length} runs of this batch and their data from this browser? Downloaded files are not affected.`)) return;
+      for (const r of g.runs) if (!isActive(r)) await RunStore.deleteRun(r.id);
+      renderRunsPanel();
+    });
+  });
 }
+
+function setRunsOpen(open) {
+  runsUi.open = open;
+  rememberRunsUi("ls_runs_open", open ? "1" : "0");
+  const panel = document.getElementById("resumeBanner");
+  panel.classList.toggle("open", open);
+  document.getElementById("runsBody").hidden = !open;
+  document.getElementById("runsBar").setAttribute("aria-expanded", String(open));
+  document.getElementById("runsToggle").textContent = open ? "Hide" : "Show";
+}
+
+async function renderRunsPanel() {
+  let runs = [];
+  try { runs = await RunStore.listRuns(); } catch { runs = []; }
+  runsUi.runs = runs;
+  const panel = document.getElementById("resumeBanner");
+  document.body.classList.toggle("has-runs", runs.length > 0);
+  if (!runs.length) { panel.classList.add("hidden"); return; }
+  if (!RunStore.isPersistent()) {
+    document.getElementById("runsNote").textContent = "Browser storage is unavailable here (private window?), so runs are kept only until this tab closes.";
+  }
+  renderRunsChips(runs);
+  renderRunsList();
+  setRunsOpen(runsUi.open);
+  panel.classList.remove("hidden");
+}
+
+document.getElementById("runsBar").addEventListener("click", () => setRunsOpen(!runsUi.open));
+document.getElementById("runsSort").value = runsUi.sort;
+document.getElementById("runsSort").addEventListener("change", (e) => { runsUi.sort = e.target.value; rememberRunsUi("ls_runs_sort", runsUi.sort); renderRunsList(); });
+document.getElementById("runsFilter").addEventListener("input", (e) => { runsUi.filter = e.target.value; renderRunsList(); });
 
 // Every run's own file plus one merged file, from a single click. The merged
 // file goes first so it can stream to disk through the save dialog while the
@@ -362,14 +509,6 @@ function groupRuns(runs) {
   return Array.from(groups.values());
 }
 
-function groupTitle(g) {
-  const withPosts = g.runs.filter((r) => (r.counts?.posts || 0) > 0);
-  const done = g.runs.filter((r) => r.status === "complete" || r.status === "complete_with_gaps").length;
-  const wins = g.runs.map((r) => r.plan?.window).filter(Boolean);
-  const span = wins.length ? ` · ${isoDay(Math.min(...wins.map((w) => w.after)))} → ${isoDay(Math.max(...wins.map((w) => w.before)))}` : "";
-  const kws = g.runs[0]?.settings?.keywords || [];
-  return `${g.batch ? "Batch" : "Runs"} · r/${escapeHtml(g.subreddit)}${span}${kws.length ? ` · ${kws.length} keyword${kws.length > 1 ? "s" : ""}` : ""} · ${g.runs.length} runs, ${done} complete, ${withPosts.reduce((n, r) => n + (r.counts?.posts || 0), 0).toLocaleString()} posts`;
-}
 
 async function openRun(id) {
   const run = await RunStore.getRun(id);
