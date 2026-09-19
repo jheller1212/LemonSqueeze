@@ -174,7 +174,7 @@ function statusClass(status) {
 // "2025", "2024 H1", "2024 Q3" file rather than an arbitrary slice.
 function splitWindow(window, splitBy) {
   if (!window || !splitBy || splitBy === "none") return [window];
-  const months = { year: 12, half: 6, quarter: 3 }[splitBy];
+  const months = { year: 12, half: 6, quarter: 3, month: 1 }[splitBy];
   if (!months) return [window];
   const cuts = [];
   const start = new Date(window.after * 1000);
@@ -202,6 +202,7 @@ function segmentLabel(w) {
   const startsMonth = a.getUTCDate() === 1;
   const endsMonth = new Date((w.before + 1) * 1000).getUTCDate() === 1; // segments end one second before a cut
   if (startsMonth && endsMonth) {
+    if (ma === mb) return `${ya}-${String(ma + 1).padStart(2, "0")}`;
     if (ma === 0 && mb === 11) return String(ya);
     if (mb - ma === 5 && ma % 6 === 0) return `${ya} H${ma / 6 + 1}`;
     if (mb - ma === 2 && ma % 3 === 0) return `${ya} Q${ma / 3 + 1}`;
@@ -224,6 +225,7 @@ async function nextQueuedRun(run) {
 }
 
 function scopeText(plan) {
+  if (plan.scope === "ids") return `${(plan.idCount || 0).toLocaleString()} posts by ID`;
   if (plan.scope === "count") return `${plan.limit.toLocaleString()} newest posts`;
   if (plan.segment) return plan.segment;
   const w = plan.window;
@@ -255,7 +257,8 @@ function buildManifest(run, st) {
     skip_nsfw: run.settings.skipNSFW,
     sorts: Array.from(new Set(run.plan.queue.map((m) => m.sort))),
     chunks: run.chunks.map((c) => ({ index: c.i, from_utc: c.after === null ? null : new Date((c.after + 1) * 1000).toISOString(), to_utc: c.before === null ? null : new Date((c.before - 1) * 1000).toISOString(), status: c.status, posts: c.posts, error: c.error || undefined })),
-    counts: { posts: st.total_posts, comments: st.total_comments, posts_with_incomplete_comments: incomplete.length, posts_reused_from_earlier_runs: st.reused },
+    counts: { posts: st.total_posts, comments: st.total_comments, posts_with_incomplete_comments: incomplete.length, posts_reused_from_earlier_runs: st.reused, ...(run.plan.scope === "ids" ? { ids_requested: run.plan.idCount, ids_not_in_archive: (run.missingIds || []).length } : {}) },
+    ids_not_in_archive: run.plan.scope === "ids" ? (run.missingIds || []) : undefined,
     comment_method: run.direct ? "browser → archive: windowed sweep of all comments in the subreddit (+30-day settle margin) grouped by post, then per-post walks for any post below 95% of Reddit's count; keyword and newest-N scopes use per-post walks" : "server batches: per-post walks",
     archive_requests_from_browser: run.direct ? Archive.stats.requests : 0,
     posts_with_incomplete_comments: incomplete,
@@ -1034,6 +1037,89 @@ document.getElementById("splitBy")?.addEventListener("change", updateCollectionE
 // --- Scrape Orchestration ---
 scrapeBtn.addEventListener("click", () => startScrape());
 
+// --- Post-ID list mode ---
+// Accepts bare ids, t3_ ids, reddit.com / redd.it links, one per line or
+// separated by commas/spaces; CSV files contribute their post_id (or id) column.
+function parseIdList(text) {
+  const out = [];
+  const seen = new Set();
+  const add = (id) => { id = String(id).toLowerCase().replace(/^t3_/, ""); if (/^[a-z0-9]{5,8}$/.test(id) && !seen.has(id)) { seen.add(id); out.push(id); } };
+  const trimmed = text.replace(/^\uFEFF/, "");
+  const firstLine = trimmed.split(/\r?\n/, 1)[0] || "";
+  const cols = firstLine.split(/[,;\t]/).map((x) => x.trim().replace(/^"|"$/g, "").toLowerCase());
+  const colIdx = cols.indexOf("post_id") >= 0 ? cols.indexOf("post_id") : cols.indexOf("id");
+  if (cols.length > 1 && colIdx >= 0) {
+    for (const row of parseCsvRows(trimmed).slice(1)) if (row[colIdx]) add(row[colIdx]);
+    return out;
+  }
+  for (const tok of trimmed.split(/[\s,;]+/)) {
+    if (!tok) continue;
+    const m = tok.match(/comments\/([a-z0-9]{5,8})/i) || tok.match(/redd\.it\/([a-z0-9]{5,8})/i);
+    add(m ? m[1] : tok.replace(/^["']|["']$/g, ""));
+  }
+  return out;
+}
+
+// Minimal RFC 4180 reader: quoted fields may hold commas, quotes and newlines.
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [], field = "", q = false;
+  const sep = (text.split(/\r?\n/, 1)[0] || "").includes("\t") ? "\t" : (text.split(/\r?\n/, 1)[0] || "").includes(";") && !(text.split(/\r?\n/, 1)[0] || "").includes(",") ? ";" : ",";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === sep) { row.push(field); field = ""; }
+    else if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (ch !== "\r") field += ch;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+let idsParsed = [];
+function refreshIdCount() {
+  idsParsed = parseIdList(document.getElementById("idsText").value);
+  const n = idsParsed.length;
+  document.getElementById("idsCount").textContent = n ? `${n.toLocaleString()} post ID${n > 1 ? "s" : ""} · ${Math.ceil(n / 1000)} batch${n > 1000 ? "es" : ""} · about ${formatDuration(estimateTime(n, document.getElementById("idsComments").checked))}` : "Paste or upload IDs to begin.";
+  document.getElementById("idsBtn").disabled = n === 0 || !!abortController;
+}
+document.getElementById("idsText").addEventListener("input", refreshIdCount);
+document.getElementById("idsComments").addEventListener("change", refreshIdCount);
+document.getElementById("idsFile").addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const ta = document.getElementById("idsText");
+  ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + parseIdList(text).join("\n");
+  refreshIdCount();
+  e.target.value = "";
+});
+document.getElementById("idsBtn").addEventListener("click", () => {
+  refreshIdCount();
+  if (!idsParsed.length) return;
+  const ids = idsParsed.slice();
+  const includeComments = document.getElementById("idsComments").checked;
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += 1000) chunks.push({ i: chunks.length, after: null, before: null, ids: ids.slice(i, i + 1000), status: "pending", posts: 0 });
+  const run = {
+    id: RunStore.newId(),
+    subreddit: "by-id",
+    status: "running",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    settings: { limit: ids.length, includeComments, includeSelftext: true, skipNSFW: false, keywords: [] },
+    plan: { scope: "ids", window: null, limit: ids.length, queue: [{ sort: "new", label: "By ID", query: "" }], expectedPosts: ids.length, expectedComments: null, idCount: ids.length },
+    chunks,
+    progress: { chunkIdx: 0, modeIdx: 0, after: null, modeFetched: 0, seq: 0 },
+    counts: { posts: 0, comments: 0 },
+  };
+  document.getElementById("idsBlock").open = false;
+  startScrape({ run });
+});
+
 let currentRun = null;
 
 // reddit_<subreddit>[_<segment>] — batch runs get their segment ("2024_Q3") in the name
@@ -1054,6 +1140,7 @@ function exportBaseName(run) {
   const plan = run.plan || {};
   let scope;
   if (plan.segment) scope = safeName(plan.segment.replace(/\s*→\s*/g, "_to_"));
+  else if (plan.scope === "ids") scope = `ids-${plan.idCount || 0}`;
   else if (plan.scope === "count" || !plan.window) scope = `newest-${plan.limit || run.settings?.limit || 0}`;
   else scope = `${isoDay(plan.window.after)}_to_${isoDay(plan.window.before)}`;
   const kws = run.settings?.keywords || [];
@@ -1405,6 +1492,8 @@ async function startScrape(opts = {}) {
     if (run.status === "complete" || run.status === "complete_with_gaps") run.progress = { ...run.progress, tail: "done" };
     run.status = "running";
     run.finishedAt = null;
+  } else if (opts.run) {
+    run = opts.run;
   } else {
     run = await planRunFromUI();
     if (!run) return;
@@ -1461,7 +1550,9 @@ async function startScrape(opts = {}) {
     await RunStore.saveRun(run);
   };
 
-  const chunkLabel = (c) => run.chunks.length > 1 ? `Chunk ${c.i + 1}/${run.chunks.length} (${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}) · ` : "";
+  const chunkLabel = (c) => run.chunks.length > 1
+    ? (c.ids ? `Batch ${c.i + 1}/${run.chunks.length} (${c.ids.length.toLocaleString()} IDs) · ` : `Chunk ${c.i + 1}/${run.chunks.length} (${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}) · `)
+    : "";
 
   // Time left: from the measured pace of chunks finished in this session; before
   // the first one finishes, from the pre-run estimate scaled to what is left.
@@ -1496,6 +1587,7 @@ async function startScrape(opts = {}) {
 
   // One chunk: every queue mode, paginated, from the saved cursor.
   const runChunk = async (c) => {
+    if (c.ids) throw new Error("Fetching by post ID needs the archive reachable from this browser; it is not right now. Resume later from Your runs.");
     const p = run.progress;
     for (let modeIdx = p.modeIdx; modeIdx < plan.queue.length; modeIdx++) {
       const mode = plan.queue[modeIdx];
@@ -1544,7 +1636,8 @@ async function startScrape(opts = {}) {
 
   // ---- Direct path: the browser pages the archive itself ----
   const signal = abortController.signal;
-  const sweepable = plan.scope !== "count" && !plan.queue.some((m) => m.query);
+  const sweepable = plan.scope !== "count" && plan.scope !== "ids" && !plan.queue.some((m) => m.query);
+  const idSubs = new Set(allPosts.map((p) => p.subreddit).filter(Boolean));
   const nowTs = Math.floor(Date.now() / 1000);
   let reuse = new Map();
   if (includeComments && !resumeId) {
@@ -1650,8 +1743,43 @@ async function startScrape(opts = {}) {
     for (let i = 0; i < open.length; i += 200) await persistPosts(open.slice(i, i + 200));
   };
 
+  // Stage 1 for an ID list: the archive returns up to 500 posts per request
+  // by id; 100 at a time keeps each request small and the cursor fine-grained.
+  const idsStage1 = async (c) => {
+    const p = run.progress;
+    let done = c.i === p.chunkIdx ? (p.modeFetched || 0) : 0;
+    run.missingIds = run.missingIds || [];
+    while (done < c.ids.length) {
+      const slice = c.ids.slice(done, done + 100);
+      const raw = await Archive.get("posts/ids", { ids: slice.join(",") }, { signal });
+      const found = new Set();
+      const fresh = [];
+      for (const r of raw) {
+        if (!r || !r.id) continue;
+        found.add(r.id);
+        const post = window.Mappers.mapPost(r);
+        if (seenIds.has(post.id)) continue;
+        if (skipNSFW && post.over_18) continue;
+        if (!includeSelftext) post.selftext = "";
+        if (post.subreddit) idSubs.add(post.subreddit);
+        const prior = includeComments ? reuse.get(post.id) : null;
+        if (prior) { post.comments = prior.comments; post.comments_complete = true; post.reused = true; run.counts.reused++; }
+        seenIds.add(post.id); byId.set(post.id, post); allPosts.push(post); fresh.push(post); c.posts++;
+      }
+      for (const id of slice) if (!found.has(id) && run.missingIds.length < 20000) run.missingIds.push(id);
+      done += slice.length;
+      run.progress = { ...run.progress, chunkIdx: c.i, modeIdx: 0, after: null, modeFetched: done };
+      run.subreddit = idSubs.size === 1 ? Array.from(idSubs)[0] : idSubs.size > 1 ? "multiple-subreddits" : run.subreddit;
+      await persistPosts(fresh);
+      progressLine(c, plan.queue[0], ` · ${run.missingIds.length ? `${run.missingIds.length.toLocaleString()} IDs not in archive` : "all IDs found so far"}`);
+    }
+    run.progress = { ...run.progress, modeIdx: plan.queue.length, after: null, modeFetched: 0 };
+  };
+
   const runChunkDirect = async (c) => {
     const p = run.progress;
+    if (c.ids) { await idsStage1(c); }
+    else
     // Stage 1: posts, newest first, cursor persisted per page
     for (let modeIdx = p.modeIdx; modeIdx < plan.queue.length; modeIdx++) {
       const mode = plan.queue[modeIdx];
@@ -1715,7 +1843,8 @@ async function startScrape(opts = {}) {
     }
 
     // Stage 2 (per-post path, keyword and newest-N scopes)
-    const inChunk = (post) => c.after == null || (post.created_utc > c.after && post.created_utc < c.before);
+    const idSet = c.ids ? new Set(c.ids) : null;
+    const inChunk = (post) => idSet ? idSet.has(post.id) : (c.after == null || (post.created_utc > c.after && post.created_utc < c.before));
     const pending = allPosts.filter((post) => inChunk(post) && post.comments_complete !== true);
     for (const post of pending) if ((post.num_comments || 0) === 0) finishPost(post, post.comments || [], true);
     const topups = pending.filter((post) => post.comments_complete !== true);
@@ -2267,7 +2396,7 @@ function postsToCSV(posts, keywordsEnabled, opts = {}) {
     const dp = toDateParts(p.created_datetime);
     const row = {
       id: p.id,
-      subreddit: opts.subreddit ?? scrapeResult?.subreddit ?? "",
+      subreddit: p.subreddit ?? opts.subreddit ?? scrapeResult?.subreddit ?? "",
       title: p.title,
       selftext: p.selftext,
       author: p.author,
@@ -2337,7 +2466,7 @@ function combinedToCSV(posts, keywordsEnabled, opts = {}) {
     const pdp = toDateParts(p.created_datetime);
     const postFields = {
       post_id: p.id,
-      subreddit: opts.subreddit ?? scrapeResult?.subreddit ?? "",
+      subreddit: p.subreddit ?? opts.subreddit ?? scrapeResult?.subreddit ?? "",
       post_title: p.title,
       post_selftext: p.selftext,
       post_author: p.author,
@@ -2439,7 +2568,7 @@ function commentsToCSV(posts, keywordsEnabled, opts = {}) {
       const row = {
         comment_id: c.id,
         post_id: p.id,
-        subreddit: opts.subreddit ?? scrapeResult?.subreddit ?? "",
+        subreddit: p.subreddit ?? opts.subreddit ?? scrapeResult?.subreddit ?? "",
         post_title: p.title,
         body: c.body,
         author: c.author,
