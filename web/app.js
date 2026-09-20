@@ -1427,7 +1427,8 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
         const r = runs[k];
         const extra = merged ? { run_label: runLabel(r), run_id: r.id } : undefined;
         await RunStore.iteratePosts(r.id, 500, async (batch) => {
-          await emit(fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra }) + "\n");
+          const text = fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra });
+          if (text) await emit(text + "\n"); // an empty batch must not leave a blank line
           first = false;
           n += batch.length;
           status(`Preparing download… ${where(k)}${n.toLocaleString()} posts`);
@@ -2507,7 +2508,8 @@ function downloadFile(content, filename, mimeType) {
 function csvEscape(val) {
   if (val === null || val === undefined) return "";
   const str = String(val);
-  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+  // a bare carriage return ends a record for every CSV reader, so it must be quoted too
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
