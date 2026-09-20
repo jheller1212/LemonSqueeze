@@ -84,19 +84,28 @@ const Archive = (() => {
   }
 
   // Posts newest → oldest in (after, before), exclusive bounds; pages of 100, deduped.
+  // The lower bound is NOT sent to the archive: its planner times out every
+  // time on sort=desc with a narrow after/before window on recent data
+  // ("Timeout. Maybe slow down a bit" in 2.7 s, deterministic), while paging
+  // by `before` alone answers in under half a second. So the bound is applied
+  // here, at the cost of at most one extra page per window. Full-text queries
+  // keep the bound: without it they would scan the whole community.
   async function* walkPostsDesc(sub, { after = null, before = null, query = "", signal } = {}) {
     let cursor = before;
     const seen = new Set();
     while (true) {
       const params = { subreddit: sub, limit: 100, sort: "desc" };
       if (cursor != null) params.before = cursor;
-      if (after != null) params.after = after;
+      if (after != null && query) params.after = after;
       if (query) params.query = query;
       const batch = await get("posts/search", params, { signal });
-      const fresh = batch.filter((r) => r.id && !seen.has(r.id));
+      const crossed = after != null && batch.length > 0 && batch[batch.length - 1].created_utc <= after;
+      const inWindow = after != null ? batch.filter((r) => r.created_utc > after) : batch;
+      const fresh = inWindow.filter((r) => r.id && !seen.has(r.id));
       for (const r of fresh) seen.add(r.id);
-      yield { posts: fresh.map(window.Mappers.mapPost), done: batch.length < 100, cursor: batch.length ? batch[batch.length - 1].created_utc + 1 : cursor };
-      if (batch.length < 100) return;
+      const done = batch.length < 100 || crossed;
+      yield { posts: fresh.map(window.Mappers.mapPost), done, cursor: batch.length ? batch[batch.length - 1].created_utc + 1 : cursor };
+      if (done) return;
       const last = batch[batch.length - 1].created_utc;
       const next = last + 1;
       cursor = next === cursor ? last : next; // a page inside one second cannot be paged; step past it
