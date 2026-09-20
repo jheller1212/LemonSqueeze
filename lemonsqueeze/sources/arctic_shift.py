@@ -95,10 +95,15 @@ class ArcticShift(Source):
             params = {"subreddit": subreddit, "limit": 100, "sort": "desc"}
             if before is not None:
                 params["before"] = before
-            if date_from:
-                params["after"] = date_from - 1
+            # The lower bound is applied here, not sent: the archive's planner
+            # times out (deterministically) on sort=desc with a narrow
+            # after/before window on recent data, while paging by `before`
+            # alone is fast. Costs at most one extra page per window.
+            lower = (date_from - 1) if date_from else None
             batch = self._get("/posts/search", params, subreddit=subreddit, query="", sort="new", page=page)
             for raw in batch:
+                if lower is not None and int(raw.get("created_utc") or 0) <= lower:
+                    continue
                 if raw.get("id") in seen:
                     continue
                 seen.add(raw.get("id"))
@@ -106,6 +111,8 @@ class ArcticShift(Source):
             if len(batch) < 100:
                 return
             last = int(batch[-1].get("created_utc") or 0)
+            if lower is not None and last <= lower:
+                return
             nxt = last + 1
             before = last if nxt == before else nxt
 
