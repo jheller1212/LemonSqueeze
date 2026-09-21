@@ -384,6 +384,7 @@ function groupCardHtml(g) {
         ${canContinue ? `<button type="button" class="link-button group-continue" title="Start the next queued run; the rest follow by themselves">Continue batch</button>` : ""}
         <button type="button" class="btn-download btn-download-small group-all" title="One merged CSV with run_label and run_id columns, then each run's own CSV">Download all</button>
         <button type="button" class="link-button group-merged" title="One CSV holding every run, with run_label and run_id columns">Merged only</button>
+        <button type="button" class="link-button group-pack" title="Methods paragraph, limitations, data dictionary, citations and an ethics checklist for the whole group, generated from its run reports">Methods pack</button>
         <button type="button" class="link-button group-delete">Delete batch</button>
       </span>
     </div>
@@ -449,6 +450,7 @@ function renderRunsList() {
     });
     el.querySelector(".group-all").addEventListener("click", () => downloadGroup(g.runs));
     el.querySelector(".group-merged").addEventListener("click", () => downloadGroup(g.runs, { mergedOnly: true }));
+    el.querySelector(".group-pack").addEventListener("click", () => downloadMethodsPack(g.runs.filter((r) => (r.counts?.posts || 0) > 0 || r.status !== "queued")));
     el.querySelector(".group-continue")?.addEventListener("click", async () => {
       const next = g.runs.filter((r) => r.status === "queued").sort((x, y) => x.batch.index - y.batch.index)[0];
       if (next) startScrape({ resumeId: next.id });
@@ -514,6 +516,20 @@ function groupRuns(runs) {
   return Array.from(groups.values());
 }
 
+
+async function manifestOf(run) {
+  return run.manifest || buildManifest(run, await runStats(run.id, run.subreddit));
+}
+
+// Methods and ethics pack for one run or a whole group, generated from the run reports.
+async function downloadMethodsPack(runs) {
+  const manifests = [];
+  for (const r of runs) manifests.push(await manifestOf(r));
+  const md = window.MethodsPack.buildMethodsPack(manifests, { pseudonymised: !!document.getElementById("pseudoToggle")?.checked });
+  const base = runs.length > 1 ? mergedBaseName(runs) : exportBaseName(runs[0]);
+  downloadFile(md, `${base}_methods_and_ethics.md`, "text/markdown");
+  RunLog.event("info", "export", { kind: "methods_pack", runs: runs.length });
+}
 
 async function openRun(id) {
   const run = await RunStore.getRun(id);
@@ -2662,6 +2678,11 @@ document.getElementById("downloadCommentsCsv").addEventListener("click", async (
   if (scrapeResult.run) { await exportRun(scrapeResult.run, "comments", { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
   const csv = commentsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `${exportBaseNameFor(scrapeResult)}_comments.csv`, "text/csv");
+});
+
+document.getElementById("downloadPack").addEventListener("click", async () => {
+  if (!scrapeResult || !scrapeResult.run) return;
+  await downloadMethodsPack([scrapeResult.run]);
 });
 
 for (const [buttonId, kind] of [["downloadEdges", "edges"], ["downloadThreads", "threads"]]) {
