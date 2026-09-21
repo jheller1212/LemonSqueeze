@@ -25,5 +25,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: node --check web/app.js
-      - run: node --check netlify/functions/scrape.mjs
+      # every script the page or the functions load must at least parse
+      - run: for f in web/*.js web/lib/*.js netlify/functions/*.mjs tests/web/*.mjs tests/web/ui/*.mjs; do node --check "$f" || exit 1; done
+      # pure logic (filters, sampling, controls, CSV streaming, ...) is unit-tested
+      - run: node --test "tests/web/unit/*.test.mjs"

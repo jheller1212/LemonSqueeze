@@ -154,6 +154,12 @@ python main.py --study studies/my_study.yaml --methods             # a methods p
 
 Every column is defined in [DATA_DICTIONARY.md](DATA_DICTIONARY.md), with its caveats. Keyword search is literal matching (no stemming, no relevance ranking), so report the recall check: it is the only evidence that the keyword list captured the phenomenon. The sample is uniform over the window's posts — the window is walked once, so it is exact; windows above 100,000 posts are refused (sample month by month instead) rather than approximated — and a "hit" means the study's collection actually retrieved the post, not a re-implementation of the archive's matching.
 
+### Web tests
+
+- `node --test "tests/web/unit/*.test.mjs"` — pure logic in `web/lib/` (filters, strata, seeded sampling, matched controls, CSV streaming). Runs in CI.
+- `node tests/web/ui/<check>.mjs` — headless-Chrome UI checks (`tests/web/harness.mjs`) against a local dev server (`tests/web/devserver.mjs`, serves `web/` under the production CSP and proxies `/api` to the live functions). They need Chrome and the network, so they run locally, before every PR. Pass a URL to run one against a deployed site.
+- `node tests/web/local/study_crosscheck.mjs` — reproduces a finished study (4,937 regex targets, 9,874 matched controls) from population files on disk; a regression check for the filter engine.
+
 ### Tests
 
 ```bash
