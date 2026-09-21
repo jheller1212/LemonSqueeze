@@ -5,6 +5,7 @@ import { bodyState, monthOf } from "./design.js";
 
 const MAX_AUTHORS = 300000;       // beyond this the author table stops growing (flagged as truncated)
 const LAG_RESERVOIR = 20000;      // sample of score-snapshot lags kept for the quantiles
+const MAX_DAYS = 120;             // daily volume is only useful (and only charted) for short runs
 export const COMMENT_BUCKETS = [[0, 0, "0"], [1, 2, "1–2"], [3, 5, "3–5"], [6, 10, "6–10"], [11, 25, "11–25"], [26, 50, "26–50"], [51, 100, "51–100"], [101, Infinity, "101+"]];
 
 const isGone = (name) => !name || name === "[deleted]";
@@ -21,6 +22,7 @@ export function createRunStats() {
     queries: new Map(),
     lags: [], lagSeen: 0, lagMissing: 0,
     firstTs: null, lastTs: null,
+    days: new Map(), daysOverflow: false, // posts per UTC day, kept only while the run spans few days
   };
   let rnd = 1234567; // tiny LCG: the lag reservoir must not depend on Math.random so results are reproducible
   const rand = () => { rnd = (rnd * 1103515245 + 12345) % 2147483648; return rnd / 2147483648; };
@@ -42,6 +44,11 @@ export function createRunStats() {
     let row = s.months.get(m);
     if (!row) { row = { posts: 0, comments: 0, intact: 0, removed: 0, deleted: 0, empty: 0 }; s.months.set(m, row); }
     row.posts++; row[state]++;
+    if (ts && !s.daysOverflow) {
+      const d = new Date(ts * 1000).toISOString().slice(0, 10);
+      s.days.set(d, (s.days.get(d) || 0) + 1);
+      if (s.days.size > MAX_DAYS) { s.daysOverflow = true; s.days.clear(); }
+    }
     if (isGone(post.author)) s.postAuthorGone++;
     author(post.author, "posts");
     const comments = post.comments || [];
@@ -82,6 +89,7 @@ export function createRunStats() {
         post_author_deleted_share: share(s.postAuthorGone, s.posts),
         comment_author_deleted_share: share(s.commentAuthorGone, s.comments),
       },
+      days: s.daysOverflow ? null : Array.from(s.days.entries()).sort(([a], [b]) => (a < b ? -1 : 1)).map(([day, posts]) => ({ day, posts })),
       months: Array.from(s.months.entries()).sort(([a], [b]) => (a < b ? -1 : 1)).map(([month, r]) => ({ month, ...r, intact_share: share(r.intact, r.posts) })),
       comments_per_post: COMMENT_BUCKETS.map(([, , label], i) => ({ bucket: label, posts: s.buckets[i] })),
       authors: { unique: s.authors.size, truncated: s.authorsTruncated, top10_share: topShare(10), top1pct_share: topShare(Math.max(1, Math.ceil(s.authors.size / 100))), top: top.slice(0, 10) },

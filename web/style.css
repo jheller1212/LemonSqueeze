@@ -1362,6 +1362,18 @@ body.has-runs .hero-subtitle { display: none; }
 .run-badge.failed { background: rgba(211, 47, 47, 0.16); color: #c62828; }
 .authors-body { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.6rem; }
 
+.descriptives { margin: 0 0 0.9rem; font-size: 0.85rem; }
+.descriptives summary { cursor: pointer; margin-bottom: 0.5rem; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0.75rem; }
+.chart-card { margin: 0; padding: 0.6rem 0.7rem 0.5rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-surface); }
+.chart-card figcaption { font-size: 0.74rem; color: var(--text-muted); line-height: 1.45; margin-top: 0.25rem; }
+.chart { width: 100%; height: auto; display: block; color: var(--text); }
+.chart-title { font-size: 11px; font-weight: 600; fill: currentColor; }
+.chart-x, .chart-v { font-size: 9px; fill: var(--text-muted); }
+.chart-axis { stroke: var(--glass-border); stroke-width: 1; }
+.chart-bar { fill: #FDD835; opacity: 0.85; }
+.chart-bar:hover { opacity: 1; }
+
 .content-availability { margin: 0 0 0.9rem; font-size: 0.85rem; line-height: 1.6; }
 .content-availability summary { cursor: pointer; }
 .content-availability .estimate-warn { display: block; }

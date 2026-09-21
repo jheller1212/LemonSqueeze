@@ -383,6 +383,11 @@
         </details>
         <div id="summary" class="stats-grid"></div>
 
+        <details id="descriptives" class="descriptives hidden" open>
+          <summary><strong>Look at the data before you download it</strong></summary>
+          <div id="descriptiveCharts" class="chart-grid"></div>
+        </details>
+
         <details id="contentAvailability" class="content-availability hidden">
           <summary id="contentSummary"></summary>
           <p class="run-log-hint">Bodies as the archive holds them: “[removed]” was taken down by moderators or Reddit, “[deleted]” by the author, before the archive made its copy. The run report records these shares and the monthly table.</p>
@@ -491,6 +496,7 @@
   <script type="module" src="lib/pseudo.js"></script>
   <script type="module" src="lib/threads.js"></script>
   <script type="module" src="lib/pack.js"></script>
+  <script type="module" src="lib/charts.js"></script>
   <script defer src="runs.js"></script>
   <script defer src="archive.js"></script>
   <script defer src="runlog.js"></script>

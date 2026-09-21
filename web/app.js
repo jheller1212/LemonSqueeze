@@ -2475,6 +2475,16 @@ function renderContentAvailability(desc) {
   box.classList.remove("hidden");
 }
 
+// A look at the data before downloading it: a broken design shows up in ten seconds here.
+function renderDescriptives(desc) {
+  const box = document.getElementById("descriptives");
+  const charts = window.Charts ? window.Charts.descriptiveCharts(desc) : [];
+  if (!charts.length) { box.classList.add("hidden"); return; }
+  // the SVG strings come from web/lib/charts.js, which escapes every label; notes are fixed text plus numbers
+  document.getElementById("descriptiveCharts").innerHTML = charts.map((c) => `<figure class="chart-card" data-chart="${c.id}">${c.svg}<figcaption>${escapeHtml(c.note)}</figcaption></figure>`).join("");
+  box.classList.remove("hidden");
+}
+
 // Authors: concentration at a glance, pseudonymised exports, the authors table, and an author panel.
 function renderAuthors(desc, run) {
   const box = document.getElementById("authorsBlock");
@@ -2635,6 +2645,7 @@ function showResults(data) {
   const statusEl = document.getElementById("runStatus");
   const run = data.run;
   renderRunLog(run);
+  renderDescriptives(data.stats ? data.stats.desc : null);
   renderContentAvailability(data.stats ? data.stats.desc : null);
   renderAuthors(data.stats ? data.stats.desc : null, run);
   if (run) {

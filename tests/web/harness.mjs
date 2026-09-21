@@ -58,7 +58,7 @@ export async function launch({ port = 9400 + Math.floor(Math.random() * 400), do
     const t0 = Date.now();
     for (;;) { const v = await page(body, arg); if (v) return v; if (Date.now() - t0 > timeout) throw new Error(`waitFor timed out: ${body.slice(0, 80)}`); await sleep(every); }
   };
-  const screenshot = async (path, clip) => { const { writeFileSync } = await import("node:fs"); const shot = await send("Page.captureScreenshot", { format: "png", ...(clip ? { clip: { ...clip, scale: 1 } } : { captureBeyondViewport: true }) }); writeFileSync(path, Buffer.from(shot.result.data, "base64")); };
+  const screenshot = async (path, clip) => { const { writeFileSync } = await import("node:fs"); const shot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, ...(clip ? { clip: { ...clip, scale: 1 } } : {}) } /* clip is in document coordinates */); writeFileSync(path, Buffer.from(shot.result.data, "base64")); };
   // Chrome is still flushing its profile when it gets the signal; removal is best effort
   const close = () => { try { ws.close(); } catch { /* ignore */ } chrome.kill(); try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* temp dir; the OS cleans it */ } };
   const files = () => (downloadDir ? readdirSync(downloadDir).filter((f) => !f.endsWith(".crdownload")) : []);
