@@ -394,6 +394,8 @@
           <div id="contentTable" class="design-table-wrap"></div>
         </details>
 
+        <p id="scoreSnapshot" class="score-snapshot hidden"></p>
+
         <details id="authorsBlock" class="content-availability hidden">
           <summary id="authorsSummary"></summary>
           <div class="authors-body">
@@ -430,7 +432,7 @@
         <label class="toggle-switch export-gzip" title="Adds trailing columns computed from the row itself; the 45 schema columns are unchanged.">
           <input type="checkbox" id="analysisToggle" />
           <span class="toggle-slider"></span>
-          <span class="toggle-text">Add analysis columns — post_body_state and comment_body_state (intact / removed / deleted / empty)</span>
+          <span class="toggle-text">Add analysis columns — post_body_state / comment_body_state (intact, removed, deleted, empty) and post_score_age_hours / comment_score_age_hours (how old the score snapshot is)</span>
         </label>
         <div class="download-bar">
           <button class="btn-download btn-download-primary" id="downloadCombinedCsv" title="Tidy CSV: one row per comment joined with parent post. Ready for R (tidyverse) or Python (pandas). Recommended for most research.">
