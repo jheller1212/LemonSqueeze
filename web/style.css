@@ -1362,6 +1362,9 @@ body.has-runs .hero-subtitle { display: none; }
 .run-badge.failed { background: rgba(211, 47, 47, 0.16); color: #c62828; }
 .authors-body { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.6rem; }
 
+.score-snapshot { margin: 0 0 0.9rem; font-size: 0.85rem; line-height: 1.6; }
+.score-snapshot code { font-size: 0.8rem; }
+
 .descriptives { margin: 0 0 0.9rem; font-size: 0.85rem; }
 .descriptives summary { cursor: pointer; margin-bottom: 0.5rem; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0.75rem; }

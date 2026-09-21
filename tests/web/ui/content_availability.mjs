@@ -57,7 +57,7 @@ const names = b.files().filter((f) => f.endsWith(".csv"));
 const second = names.find((f) => f !== plainName) || names[names.length - 1];
 const rows = parseCsv(readFileSync(join(dl, second), "utf8"));
 const h = rows[0], ps = h.indexOf("post_body_state"), cs = h.indexOf("comment_body_state"), pid = h.indexOf("post_id"), cid = h.indexOf("comment_id");
-check("analysis columns on: post_body_state and comment_body_state trail the schema", h.length === 47 && ps === 45 && cs === 46, h.slice(-3).join(","));
+check("analysis columns on: body states (and score ages) trail the schema", h.length === 49 && ps === 45 && cs === 47, h.slice(-5).join(","));
 const byPost = (id) => rows.slice(1).filter((r) => r[pid] === id);
 check("values are right per post and per comment", byPost("b5").every((r) => r[ps] === "intact") && byPost("b30").every((r) => r[ps] === "removed") && byPost("b80").every((r) => r[ps] === "deleted") && byPost("b95").every((r) => r[ps] === "empty")
   && rows.find((r) => r[cid] === "c4a")[cs] === "removed" && rows.find((r) => r[cid] === "c10b")[cs] === "deleted" && rows.find((r) => r[cid] === "c3a")[cs] === "intact");

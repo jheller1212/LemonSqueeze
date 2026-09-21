@@ -271,6 +271,7 @@ function buildManifest(run, st) {
     export_basename: exportBaseName(run),
     content_availability: st.desc ? { ...st.desc.content, by_month: st.desc.months.map((m) => ({ month: m.month, posts: m.posts, intact: m.intact, removed: m.removed, deleted: m.deleted, empty: m.empty })),
       note: "Post and comment bodies as the archive holds them. '[removed]' = taken down by moderators or Reddit, '[deleted]' = deleted by the author, before the archive's copy was made. Analyses of text only see the intact share." } : undefined,
+    score_snapshot: st.desc ? { ...st.desc.score_snapshot, note: "Hours between a post's creation and the archive's score capture (post_score_as_of). Scores are not live values." } : undefined,
     log_summary: RunLog.summary(run),
     started_at: new Date(run.createdAt).toISOString(),
     finished_at: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
@@ -1461,9 +1462,10 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
   const designOnly = Array.from(new Set(runs.flatMap((r) => r.design?.columns || [])));
   // Optional analysis columns, derived from what is already in the row: what is left of each body.
   const analysis = !!document.getElementById("analysisToggle")?.checked && window.Design;
-  const designCols = analysis ? [...designOnly, "post_body_state", ...(kind === "combined" || kind === "comments" ? ["comment_body_state"] : [])] : designOnly;
-  const postExtras = (ann) => (ann || analysis) ? (p) => ({ ...(ann ? ann[p.id] || {} : {}), ...(analysis ? { post_body_state: window.Design.bodyState(p.selftext) } : {}) }) : undefined;
-  const commentExtras = analysis ? (c) => ({ comment_body_state: window.Design.bodyState(c.body) }) : undefined;
+  const withComments = kind === "combined" || kind === "comments";
+  const designCols = analysis ? [...designOnly, "post_body_state", "post_score_age_hours", ...(withComments ? ["comment_body_state", "comment_score_age_hours"] : [])] : designOnly;
+  const postExtras = (ann) => (ann || analysis) ? (p) => ({ ...(ann ? ann[p.id] || {} : {}), ...(analysis ? { post_body_state: window.Design.bodyState(p.selftext), post_score_age_hours: scoreAgeHours(p) } : {}) }) : undefined;
+  const commentExtras = analysis ? (c) => ({ comment_body_state: window.Design.bodyState(c.body), comment_score_age_hours: scoreAgeHours(c) }) : undefined;
 
   // Pseudonymise authors on the way out (never in the store): SHA-256 of salt + name, as in the CLI.
   const pseudo = document.getElementById("pseudoToggle")?.checked && window.Pseudo ? window.Pseudo.createPseudonymiser(window.Pseudo.loadOrCreateSalt(localStorage).salt) : null;
@@ -2475,6 +2477,27 @@ function renderContentAvailability(desc) {
   box.classList.remove("hidden");
 }
 
+// Hours between an item's creation and the moment the archive recorded its score ("" when unknown).
+function scoreAgeHours(item) {
+  const asOf = item && item.score_as_of ? Date.parse(item.score_as_of) / 1000 : 0;
+  return asOf && item.created_utc ? +((asOf - item.created_utc) / 3600).toFixed(1) : "";
+}
+
+// Scores are the archive's snapshot, not live values: say how old the snapshots are in this run.
+function renderScoreSnapshot(desc) {
+  const el = document.getElementById("scoreSnapshot");
+  const s = desc && desc.score_snapshot;
+  if (!s || (!s.posts_with_timestamp && !s.posts_without)) { el.classList.add("hidden"); return; }
+  const h = (x) => Math.round(x).toLocaleString();
+  el.innerHTML = s.posts_with_timestamp
+    ? `<strong>Scores are snapshots, not live values.</strong> The archive recorded them a median of <strong>${h(s.median_hours)} hours</strong> after posting (10th–90th percentile ${h(s.p10_hours)}–${h(s.p90_hours)} h)` +
+      (s.under_24h_share > 0.005 ? `; ${pctText(s.under_24h_share)} were captured less than a day after posting, when voting had barely started` : "") +
+      (s.posts_without ? `; ${s.posts_without.toLocaleString()} posts carry no capture time` : "") +
+      `. Do not compare them with numbers read on Reddit today. <span class="design-dim">Control for it with <code>post_score_as_of</code>, or switch on the analysis columns for <code>post_score_age_hours</code>.</span>`
+    : `<strong>Scores are snapshots, not live values</strong>, and the archive recorded no capture time for these posts, so their age is unknown. Treat scores in this run as indicative only.`;
+  el.classList.remove("hidden");
+}
+
 // A look at the data before downloading it: a broken design shows up in ten seconds here.
 function renderDescriptives(desc) {
   const box = document.getElementById("descriptives");
@@ -2647,6 +2670,7 @@ function showResults(data) {
   renderRunLog(run);
   renderDescriptives(data.stats ? data.stats.desc : null);
   renderContentAvailability(data.stats ? data.stats.desc : null);
+  renderScoreSnapshot(data.stats ? data.stats.desc : null);
   renderAuthors(data.stats ? data.stats.desc : null, run);
   if (run) {
     const failed = run.chunks.filter((c) => c.status === "failed");
