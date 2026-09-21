@@ -1389,6 +1389,9 @@ body.has-runs .hero-subtitle { display: none; }
 .run-log-sent { font-size: 0.8rem; color: var(--text-muted); }
 .run-log-text { max-height: 18rem; overflow: auto; font-size: 0.72rem; line-height: 1.45; padding: 0.6rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-surface); white-space: pre; }
 
+.run-trouble, .run-empty { display: block; margin-top: 0.35rem; padding: 0.45rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid rgba(249, 168, 37, 0.45); background: rgba(249, 168, 37, 0.08); }
+.run-empty { border-color: var(--glass-border); background: var(--bg-surface); }
+
 .run-status { margin: 0.25rem 0 0.75rem; font-size: 0.9rem; line-height: 1.5; }
 .run-status .run-badge { margin-right: 0.4rem; }
 .progress-hint { font-size: 0.72rem; color: var(--text-dim); margin-top: 0.4rem; }
@@ -1404,11 +1407,13 @@ body.has-runs .hero-subtitle { display: none; }
   z-index: 5;
   margin-top: 1.25rem;
   padding: 0.75rem;
+  /* opaque: the bar floats over the controls while scrolling, and a see-through bar made both unreadable */
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--bg-surface), var(--bg-surface));
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.4rem;
-  background: var(--bg-surface);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
