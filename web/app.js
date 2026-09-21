@@ -342,7 +342,7 @@ function runRowHtml(r, inGroup = false) {
   const active = isActive(r);
   const canResume = r.status !== "complete" && !active;
   const batch = r.batch ? ` · run ${r.batch.index + 1} of ${r.batch.total}` : "";
-  const title = inGroup ? escapeHtml(scopeText(r.plan)) : `r/${escapeHtml(r.subreddit)}`;
+  const title = inGroup ? `${r.batch?.communities ? `r/${escapeHtml(r.subreddit)} · ` : ""}${escapeHtml(scopeText(r.plan))}` : `r/${escapeHtml(r.subreddit)}`;
   const scope = inGroup ? "" : escapeHtml(scopeText(r.plan));
   return `<div class="run-row${active ? " active" : ""}" data-id="${r.id}">
     <span class="run-badge ${active ? "running" : statusClass(r.status)}">${active ? "running now" : statusLabel(r.status)}</span>
@@ -378,7 +378,7 @@ function groupCardHtml(g) {
     <div class="run-group-head">
       <button type="button" class="group-toggle" aria-expanded="${open}"><span class="chev">▸</span>${g.runs.length} runs</button>
       <span class="run-badge ${statusClass(st.status)}">${st.label}</span>
-      <span class="run-title">r/${escapeHtml(g.subreddit)}</span>
+      <span class="run-title">${escapeHtml(groupCommunities(g))}</span>
       <span class="run-meta">${parts.join(" · ")}</span>
       <span class="run-actions">
         ${canContinue ? `<button type="button" class="link-button group-continue" title="Start the next queued run; the rest follow by themselves">Continue batch</button>` : ""}
@@ -506,6 +506,11 @@ async function downloadGroup(runs, { mergedOnly = false } = {}) {
 }
 
 // Runs that belong together: a batch, or several runs of the same community.
+function groupCommunities(g) {
+  const subs = Array.from(new Set(g.runs.map((r) => r.subreddit)));
+  return subs.length > 3 ? `r/${subs.slice(0, 3).join(", r/")} + ${subs.length - 3} more` : `r/${subs.join(", r/")}`;
+}
+
 function groupRuns(runs) {
   const groups = new Map();
   for (const r of runs) {
@@ -1425,7 +1430,8 @@ async function exportRun(run, kind, opts = {}) {
 // What a merged file calls each run: the batch segment or the scope, plus keywords.
 function runLabel(run) {
   const kws = run.settings?.keywords || [];
-  return `${run.plan?.segment || scopeText(run.plan || {})}${kws.length ? ` · kw: ${kws.join(" | ")}` : ""}`;
+  const community = run.batch?.communities ? `r/${run.subreddit} · ` : "";
+  return `${community}${run.plan?.segment || scopeText(run.plan || {})}${kws.length ? ` · kw: ${kws.join(" | ")}` : ""}`;
 }
 
 function mergedBaseName(runs) {
@@ -1650,9 +1656,9 @@ async function planRunFromUI() {
     expectedComments = count ? count.comments : null;
     limit = MAX_POSTS_PER_SORT;
   }
-  const makeRun = (win, exp, expC, extra = {}) => ({
+  const makeRun = (win, exp, expC, extra = {}, community = subreddit) => ({
     id: RunStore.newId(),
-    subreddit,
+    subreddit: community,
     status: "running",
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -1665,19 +1671,59 @@ async function planRunFromUI() {
 
   // A split scope becomes a batch: one run per segment, newest first, the
   // rest queued; each finished run starts the next by itself.
+  // Several communities with the same settings: every community x every segment is one run of the batch.
+  // The count is known for the analysed community only; the others are chunked by time.
+  let extras;
+  try { extras = await checkedExtraCommunities(subreddit); } catch (err) { showError(err.message); progressSection.classList.add("hidden"); return null; }
+  const communities = [subreddit, ...extras];
   const segments = window ? splitWindow(window, getSplitBy()) : [window];
-  if (segments.length <= 1) return makeRun(window, expected, expectedComments);
+  if (segments.length <= 1 && communities.length <= 1) return makeRun(window, expected, expectedComments);
   const batchId = RunStore.newId();
-  const span = window.before - window.after;
-  const runs = segments.map((seg, i) => {
-    const frac = (seg.before - seg.after) / span; // counts are spread by time share
-    const r = makeRun(seg, expected ? Math.max(1, Math.round(expected * frac)) : null, expectedComments ? Math.round(expectedComments * frac) : null, { segment: segmentLabel(seg) });
-    r.batch = { id: batchId, index: i, total: segments.length };
-    if (i > 0) r.status = "queued";
-    return r;
-  });
+  const span = window ? window.before - window.after : 0;
+  const runs = [];
+  for (const community of communities) {
+    const own = community === subreddit;
+    // "whole community" starts at the analysed community's first post; for the others start at Reddit's beginning
+    const base = window && !own && scope === "all" ? { after: 1104537600, before: window.before } : window;
+    const segs = own ? segments : (base ? splitWindow(base, getSplitBy()) : [base]);
+    for (const seg of segs) {
+      const frac = seg && span ? (seg.before - seg.after) / span : 1; // counts are spread by time share
+      const label = seg && segs.length > 1 ? { segment: segmentLabel(seg) } : {};
+      runs.push(makeRun(seg, own && expected ? Math.max(1, Math.round(expected * frac)) : null, own && expectedComments ? Math.round(expectedComments * frac) : null, label, community));
+    }
+  }
+  runs.forEach((r, i) => { r.batch = { id: batchId, index: i, total: runs.length, communities: communities.length > 1 ? communities : undefined }; if (i > 0) r.status = "queued"; });
   for (const r of runs.slice(1)) await RunStore.saveRun(r);
   return runs[0];
+}
+
+// The extra communities typed under the scope cards: names only, de-duplicated, each checked against the archive.
+function parseExtraCommunities(primary) {
+  const raw = document.getElementById("extraSubs")?.value || "";
+  const out = [], seen = new Set([String(primary).toLowerCase()]);
+  const bad = [];
+  for (const tok of raw.split(/[\s,;]+/)) {
+    if (!tok) continue;
+    const m = tok.match(/reddit\.com\/r\/([^/?\s]+)/i);
+    const name = (m ? m[1] : tok).replace(/^\/?r\//i, "");
+    if (!/^[A-Za-z0-9_]{2,21}$/.test(name)) { bad.push(tok); continue; }
+    if (!seen.has(name.toLowerCase())) { seen.add(name.toLowerCase()); out.push(name); }
+  }
+  return { names: out, bad };
+}
+
+async function checkedExtraCommunities(primary) {
+  const { names, bad } = parseExtraCommunities(primary);
+  if (bad.length) throw new Error(`Not a community name: ${bad.slice(0, 3).join(", ")}. Use names such as replika or r/replika, separated by commas.`);
+  if (names.length > 20) throw new Error("At most 20 additional communities in one study.");
+  const checked = [];
+  for (const name of names) {
+    let r;
+    try { r = await apiCall({ action: "peek", input: "r/" + name }, 2, { background: true }); } catch (err) { throw new Error(`Could not check r/${name} (${err.message}). Try again, or remove it.`); }
+    if (!r || r.type !== "subreddit" || !r.found) throw new Error(`r/${name} was not found in the archive. Check the spelling, or remove it.`);
+    checked.push(r.name || name);
+  }
+  return checked;
 }
 
 async function startScrape(opts = {}) {
