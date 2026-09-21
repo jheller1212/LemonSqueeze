@@ -38,7 +38,7 @@ function designSentences(d) {
   const out = [];
   if (filters.length) out.push(`Posts were classified offline with regular expressions applied to title and body (Unicode-aware word boundaries): ${filters.join("; ")}.`);
   if (d.kind === "sample") out.push(`A ${d.stratify_by && d.stratify_by.length ? "stratified (" + d.stratify_by.join(" × ") + ", proportional allocation)" : "simple"} random sample of ${n(d.posts)} posts was drawn without replacement from ${d.pool} with seed ${d.seed}.`);
-  if (d.kind === "matched_controls") out.push(`Targets were the ${n(d.targets)} posts matching ${d.targets_filter}. For each target, ${d.k} control post(s) not matching ${d.controls_exclude_filter} were drawn without replacement from the same ${(d.match_on || []).join(" × ") || "population"} stratum (quartiles computed within the month's population), seed ${d.seed}; ${n(d.controls)} controls were obtained${d.shortfall ? `, ${n(d.shortfall)} control slots could not be filled` : ""}.`);
+  if (d.kind === "matched_controls") out.push(`Targets were the ${n(d.targets)} posts matching ${d.targets_filter}. For each target, ${d.k} control post(s) not matching ${d.controls_exclude_filter} were drawn without replacement from the same ${(d.match_on || []).join(" × ") || "population"} stratum (quartiles computed within the month's population), seed ${d.seed}; ${n(d.controls)} controls were obtained${d.shortfall ? `; ${n(d.shortfall)} control slots could not be filled because their stratum ran out of eligible posts${d.targets_without_control ? `, leaving ${n(d.targets_without_control)} target(s) without any control` : ""}` : ""}.`);
   if (d.kind === "author_panel") out.push(`Accounts with at least ${d.min_posts} posts in a prior run were selected (${n(d.authors)} accounts) and all their posts in the community were collected.`);
   return out;
 }
@@ -61,7 +61,7 @@ export function buildMethodsPack(manifests, { pseudonymised = false, generatedAt
   const design = ms.map((m) => m.design).find(Boolean);
 
   const methods = [];
-  methods.push(`Data were collected from ${subs.map((s) => "r/" + s).join(", ")} with LemonSqueeze (web app) between ${day(collected[0])} and ${day(collected[1])}. The source was the Arctic Shift archive of Reddit (https://arctic-shift.photon-reddit.com), not the Reddit API; the archive ingests posts and comments as they appear and re-visits each item once, roughly a day and a half later.`);
+  methods.push(`Data were collected from ${subs.map((s) => "r/" + s).join(", ")} with LemonSqueeze (web app) ${day(collected[0]) === day(collected[1]) || !collected[1] ? "on " + day(collected[0]) : "between " + day(collected[0]) + " and " + day(collected[1])} (the date the tool ran, not the period the data cover). The source was the Arctic Shift archive of Reddit (https://arctic-shift.photon-reddit.com), not the Reddit API; the archive ingests posts and comments as they appear and re-visits each item once, roughly a day and a half later.`);
   methods.push(ms.length > 1
     ? `The collection consisted of ${ms.length} runs${from ? ` covering ${day(from)} to ${day(to)} (UTC)` : ""}; each run retrieved ${scopeSentence(ms[0]).replace(/between .* \(UTC\)/, "in its time window")}.`
     : `The run retrieved ${scopeSentence(ms[0])}.`);

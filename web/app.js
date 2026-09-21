@@ -965,7 +965,7 @@ function parseKeywords() {
 function selectedWindow() {
   const now = Math.floor(Date.now() / 1000);
   const tf = document.getElementById("timeFilter").value;
-  const days = { day: 1, week: 7, month: 30, year: 365, year2: 730, year3: 1095, year5: 1826 }[tf];
+  const days = { day: 1, week: 7, month: 30, months3: 91, months6: 182, year: 365, year2: 730, year3: 1095, year5: 1826 }[tf];
   if (days) return { after: now - days * 86400, before: now, all: false };
   if (tf === "custom") {
     const fromVal = document.getElementById("dateFrom").value;

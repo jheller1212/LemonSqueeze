@@ -69,8 +69,8 @@ const mf = b.files().find((f) => f.endsWith("_manifest.csv"));
 check("manifest downloaded with a descriptive name", !!mf && /seed42_30posts/.test(mf), String(mf));
 if (mf) {
   const lines = readFileSync(join(dl, mf), "utf8").trim().split("\n");
-  check("manifest columns", lines[0] === "post_id,sample_group,match_post_id,stratum,seed,flag_bot,post_created_utc,post_num_comments,post_score,post_body_state", lines[0]);
-  check("manifest rows: 30, all flagged TRUE with seed 42", lines.length === 31 && lines.slice(1).every((l) => l.split(",")[4] === "42" && l.split(",")[5] === "TRUE"));
+  check("manifest columns", lines[0] === "post_id,sample_group,match_post_id,stratum,controls_matched,seed,flag_bot,post_created_utc,post_num_comments,post_score,post_body_state", lines[0]);
+  check("manifest rows: 30, all flagged TRUE with seed 42", lines.length === 31 && lines.slice(1).every((l) => l.split(",")[5] === "42" && l.split(",")[6] === "TRUE"));
 }
 
 // hand-off to the ID fetch (ids are synthetic, so the archive holds none of them; the run must still finish cleanly)
