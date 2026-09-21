@@ -1288,6 +1288,8 @@ footer {
 
 .split-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; margin: -0.5rem 0 1.25rem; font-size: 0.9rem; }
 .split-row label { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600; }
+.split-row .extra-subs { flex: 1 1 22rem; }
+.split-row .extra-subs input { flex: 1 1 auto; min-width: 12rem; padding: 0.35rem 0.6rem; font-size: 0.85rem; font-weight: 400; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text); }
 .split-row .split-note { flex: 1 1 100%; font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; }
 .split-row.hidden { display: none; }
 .estimate-batch { display: block; margin-top: 0.3rem; }
