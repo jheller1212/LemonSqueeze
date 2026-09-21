@@ -109,6 +109,45 @@
         </div>
       </details>
 
+      <!-- Study design on a population -->
+      <details class="design-block glass-card" id="designBlock">
+        <summary>
+          <strong>Design a study from a population you already hold</strong>
+          <span class="discover-sub">Collect a community once without keywords, then test your search terms here, offline: hit counts per month, random hits to read for false positives. Nothing is uploaded.</span>
+        </summary>
+        <div class="design-body">
+          <div class="design-step">
+            <span class="design-step-title">1 · Population</span>
+            <div class="ids-row">
+              <label class="runs-control">Saved runs <span class="select-wrapper"><select id="designSource"><option value="">— choose —</option></select></span></label>
+              <label class="ids-file">or CSV / CSV.gz files from disk <input type="file" id="designFiles" accept=".csv,.gz" multiple /></label>
+            </div>
+          </div>
+          <div class="design-step">
+            <span class="design-step-title">2 · Filters <span class="info-tooltip" data-tooltip="One filter per line: NAME = regex. Indented lines (or lines starting with |) continue the regex above. 'OR NAME' at the end includes an earlier filter. Filters see the post title and body. Word boundaries (\b) are Unicode-aware, as in Python and R.">?</span></span>
+            <textarea id="designFilters" rows="6" class="input-keywords design-filters" spellcheck="false" placeholder="RIVAL = (\bai (girlfriend|boyfriend|partner)\b|\breplika\b)&#10;TOOL = (\bchatgpt\b|\bgpt\b)&#10;BROAD = (\ba\.?i\.?\b|\bchatbot\b) OR RIVAL OR TOOL"></textarea>
+            <div class="ids-row">
+              <button type="button" class="btn-scrape" id="designRun"><span class="btn-text">Test filters</span></button>
+              <label class="design-check"><input type="checkbox" id="designCase" /> case-sensitive</label>
+              <span id="designStatus" class="ids-count"></span>
+            </div>
+            <p id="designErrors" class="design-errors" aria-live="polite"></p>
+          </div>
+          <div id="designResults" class="design-step hidden">
+            <span class="design-step-title">3 · What the filters catch</span>
+            <p id="designTotals" class="design-totals"></p>
+            <div id="designTable" class="design-table-wrap"></div>
+            <div class="ids-row design-preview-head">
+              <strong>Read 20 random hits of</strong>
+              <span class="select-wrapper"><select id="designPreviewFilter"></select></span>
+              <button type="button" class="link-button" id="designPreviewMore">another 20</button>
+              <span class="design-dim">Look for false positives before you commit to a term list.</span>
+            </div>
+            <ul id="designPreview" class="design-preview"></ul>
+          </div>
+        </div>
+      </details>
+
       <!-- Thread Result (for single post URL) -->
       <div id="threadCard" class="analysis-card glass-card hidden">
         <div class="analysis-header">
@@ -349,5 +388,6 @@
   <script defer src="archive.js"></script>
   <script defer src="runlog.js"></script>
   <script defer src="app.js"></script>
+  <script type="module" src="design-ui.js"></script>
 </body>
 </html>
