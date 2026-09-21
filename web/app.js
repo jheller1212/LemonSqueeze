@@ -267,6 +267,8 @@ function buildManifest(run, st) {
     posts_archive_below_reddit_count: archiveShort,
     completeness_note: "post_comments_complete is true when the archive was walked to the end AND holds at least 95% of Reddit's num_comments. Posts listed under posts_archive_below_reddit_count were walked to the end; the archive simply holds fewer comments than Reddit counted (removed before archiving). Posts under posts_not_fully_fetched were interrupted; Resume finishes them.",
     export_basename: exportBaseName(run),
+    content_availability: st.desc ? { ...st.desc.content, by_month: st.desc.months.map((m) => ({ month: m.month, posts: m.posts, intact: m.intact, removed: m.removed, deleted: m.deleted, empty: m.empty })),
+      note: "Post and comment bodies as the archive holds them. '[removed]' = taken down by moderators or Reddit, '[deleted]' = deleted by the author, before the archive's copy was made. Analyses of text only see the intact share." } : undefined,
     log_summary: RunLog.summary(run),
     started_at: new Date(run.createdAt).toISOString(),
     finished_at: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
@@ -1305,7 +1307,8 @@ function stripStoreFields(p) {
 // Counts, completeness lists and a preview, read from the store in batches —
 // a 100,000-post run never has to sit in memory at once.
 async function runStats(runId, subreddit = "") {
-  const st = { total_posts: 0, total_comments: 0, total_score: 0, incomplete: [], notFetched: [], archiveShort: [], reused: 0, preview: [], bytes: null };
+  const st = { total_posts: 0, total_comments: 0, total_score: 0, incomplete: [], notFetched: [], archiveShort: [], reused: 0, preview: [], bytes: null, desc: null };
+  const agg = window.RunStats ? window.RunStats.createRunStats() : null;
   await RunStore.iteratePosts(runId, 500, async (batch) => {
     if (st.bytes === null) {
       // extrapolate export sizes from the first batch
@@ -1314,6 +1317,7 @@ async function runStats(runId, subreddit = "") {
       st.bytes = { sample_posts: sample.length, combined: combinedToCSV(sample, false, { subreddit }).length, posts: postsToCSV(sample, false, { subreddit }).length, comments: commentsToCSV(sample, false, { subreddit }).length, sample_comments: k };
     }
     for (const p of batch) {
+      if (agg) agg.add(p);
       st.total_posts++;
       st.total_comments += p.comments?.length || 0;
       st.total_score += p.score || 0;
@@ -1325,6 +1329,7 @@ async function runStats(runId, subreddit = "") {
       if (st.preview.length < 5) st.preview.push(stripStoreFields(p));
     }
   });
+  if (agg) st.desc = agg.result();
   return st;
 }
 
@@ -1410,7 +1415,12 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
   const encoder = new TextEncoder();
 
   // Columns a study design attached to its posts (sample_group, match_post_id, flag_*): the union over the runs in this file.
-  const designCols = Array.from(new Set(runs.flatMap((r) => r.design?.columns || [])));
+  const designOnly = Array.from(new Set(runs.flatMap((r) => r.design?.columns || [])));
+  // Optional analysis columns, derived from what is already in the row: what is left of each body.
+  const analysis = !!document.getElementById("analysisToggle")?.checked && window.Design;
+  const designCols = analysis ? [...designOnly, "post_body_state", ...(kind === "posts" ? [] : ["comment_body_state"])] : designOnly;
+  const postExtras = (ann) => (ann || analysis) ? (p) => ({ ...(ann ? ann[p.id] || {} : {}), ...(analysis ? { post_body_state: window.Design.bodyState(p.selftext) } : {}) }) : undefined;
+  const commentExtras = analysis ? (c) => ({ comment_body_state: window.Design.bodyState(c.body) }) : undefined;
 
   // Produce the file as a sequence of text pieces.
   async function produce(emit) {
@@ -1438,7 +1448,7 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
         const extra = merged ? { run_label: runLabel(r), run_id: r.id } : undefined;
         const ann = r.design?.annotations || null;
         await RunStore.iteratePosts(r.id, 500, async (batch) => {
-          const text = fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra, extraCols: designCols, extraFor: ann ? (p) => ann[p.id] : undefined });
+          const text = fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra, extraCols: designCols, extraFor: postExtras(ann), extraForComment: commentExtras });
           if (text) await emit(text + "\n"); // an empty batch must not leave a blank line
           first = false;
           n += batch.length;
@@ -2326,6 +2336,24 @@ function buildStudyYaml(data, subs, keywords) {
 }
 
 // --- Results display ---
+const pctText = (x) => (x * 100).toFixed(x > 0 && x < 0.1 ? 1 : 0) + "%";
+
+// What is left of the content: most text analyses silently run on the intact share only.
+function renderContentAvailability(desc) {
+  const box = document.getElementById("contentAvailability");
+  if (!desc || !desc.posts) { box.classList.add("hidden"); return; }
+  const b = desc.content.post_bodies, c = desc.content.comment_bodies;
+  const low = b.intact_share < 0.5;
+  document.getElementById("contentSummary").innerHTML =
+    `<strong>Post bodies: ${pctText(b.intact_share)} intact</strong> · ${pctText(b.removed_share)} removed by moderators or Reddit · ${pctText(b.deleted_share)} deleted by the author · ${pctText(b.empty_share)} empty (title or link only)` +
+    (desc.comments ? ` · <strong>comments: ${pctText(c.intact_share)} intact</strong>` : "") +
+    ` · authors deleted: ${pctText(desc.content.post_author_deleted_share)} of posts` +
+    (low ? ` <span class="estimate-warn">Fewer than half of the post bodies can be read. Report this share; text analyses describe the surviving posts, not the community.</span>` : "");
+  document.getElementById("contentTable").innerHTML = `<table class="design-table"><thead><tr><th>month</th><th>posts</th><th>intact</th><th>removed</th><th>deleted</th><th>empty</th><th>intact share</th></tr></thead><tbody>` +
+    desc.months.map((m) => `<tr><td>${escapeHtml(m.month)}</td><td>${m.posts.toLocaleString()}</td><td>${m.intact.toLocaleString()}</td><td>${m.removed.toLocaleString()}</td><td>${m.deleted.toLocaleString()}</td><td>${m.empty.toLocaleString()}</td><td>${pctText(m.intact_share)}</td></tr>`).join("") + `</tbody></table>`;
+  box.classList.remove("hidden");
+}
+
 function renderRunLog(run) {
   const box = document.getElementById("runLog");
   if (!run || !run.log || !run.log.length) { box.classList.add("hidden"); return; }
@@ -2406,6 +2434,7 @@ function showResults(data) {
   const statusEl = document.getElementById("runStatus");
   const run = data.run;
   renderRunLog(run);
+  renderContentAvailability(data.stats ? data.stats.desc : null);
   if (run) {
     const failed = run.chunks.filter((c) => c.status === "failed");
     const chunksNote = run.chunks.length > 1 ? ` ${run.chunks.filter((c) => c.status === "done").length} of ${run.chunks.length} time chunks finished.` : "";
@@ -2664,6 +2693,7 @@ function combinedToCSV(posts, keywordsEnabled, opts = {}) {
       rows.push(headers.map((h) => csvEscape(h in row ? row[h] : extra[h])).join(","));
     } else {
       for (const c of comments) {
+        const cx = opts.extraForComment ? { ...extra, ...opts.extraForComment(c, p) } : extra;
         const cdp = toDateParts(c.created_datetime);
         const row = {
           ...postFields,
@@ -2691,7 +2721,7 @@ function combinedToCSV(posts, keywordsEnabled, opts = {}) {
           row.comment_matched_categories = (c.matched_categories || []).join("; ");
           row.comment_matched_keywords = JSON.stringify(c.matched_keywords || {});
         }
-        rows.push(headers.map((h) => csvEscape(h in row ? row[h] : extra[h])).join(","));
+        rows.push(headers.map((h) => csvEscape(h in row ? row[h] : cx[h])).join(","));
       }
     }
   }
@@ -2719,6 +2749,7 @@ function commentsToCSV(posts, keywordsEnabled, opts = {}) {
   for (const p of posts) {
     const extra = opts.extraFor ? { ...extraBase, ...(opts.extraFor(p) || {}) } : extraBase;
     for (const c of p.comments || []) {
+      const cx = opts.extraForComment ? { ...extra, ...opts.extraForComment(c, p) } : extra;
       const dp = toDateParts(c.created_datetime);
       const row = {
         comment_id: c.id,
@@ -2749,7 +2780,7 @@ function commentsToCSV(posts, keywordsEnabled, opts = {}) {
         row.matched_categories = (c.matched_categories || []).join("; ");
         row.matched_keywords = JSON.stringify(c.matched_keywords || {});
       }
-      rows.push(headers.map((h) => csvEscape(h in row ? row[h] : extra[h])).join(","));
+      rows.push(headers.map((h) => csvEscape(h in row ? row[h] : cx[h])).join(","));
     }
   }
 
