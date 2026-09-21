@@ -1392,6 +1392,9 @@ const EXPORTERS = {
   combined: { fn: combinedToCSV, suffix: "combined.csv", mime: "text/csv" },
   posts: { fn: postsToCSV, suffix: "posts.csv", mime: "text/csv" },
   comments: { fn: commentsToCSV, suffix: "comments.csv", mime: "text/csv" },
+  // conversation structure (web/lib/threads.js): who replied to what, and one summary row per thread
+  edges: { fn: (posts, _kw, opts) => window.Threads.edgesToCSV(posts, opts), suffix: "reply_edges.csv", mime: "text/csv" },
+  threads: { fn: (posts, _kw, opts) => window.Threads.threadsToCSV(posts, opts), suffix: "thread_summaries.csv", mime: "text/csv" },
 };
 
 // Two ways to hand over a file that may be hundreds of MB:
@@ -1436,7 +1439,7 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
   const designOnly = Array.from(new Set(runs.flatMap((r) => r.design?.columns || [])));
   // Optional analysis columns, derived from what is already in the row: what is left of each body.
   const analysis = !!document.getElementById("analysisToggle")?.checked && window.Design;
-  const designCols = analysis ? [...designOnly, "post_body_state", ...(kind === "posts" ? [] : ["comment_body_state"])] : designOnly;
+  const designCols = analysis ? [...designOnly, "post_body_state", ...(kind === "combined" || kind === "comments" ? ["comment_body_state"] : [])] : designOnly;
   const postExtras = (ann) => (ann || analysis) ? (p) => ({ ...(ann ? ann[p.id] || {} : {}), ...(analysis ? { post_body_state: window.Design.bodyState(p.selftext) } : {}) }) : undefined;
   const commentExtras = analysis ? (c) => ({ comment_body_state: window.Design.bodyState(c.body) }) : undefined;
 
@@ -2660,6 +2663,15 @@ document.getElementById("downloadCommentsCsv").addEventListener("click", async (
   const csv = commentsToCSV(scrapeResult.posts, scrapeResult.keywordsEnabled);
   downloadFile(csv, `${exportBaseNameFor(scrapeResult)}_comments.csv`, "text/csv");
 });
+
+for (const [buttonId, kind] of [["downloadEdges", "edges"], ["downloadThreads", "threads"]]) {
+  document.getElementById(buttonId).addEventListener("click", async () => {
+    if (!scrapeResult) return;
+    if (scrapeResult.run) { await exportRun(scrapeResult.run, kind, { gesture: true, gzip: document.getElementById("gzipToggle").checked }); return; }
+    const csv = EXPORTERS[kind].fn(scrapeResult.posts, false, {});
+    downloadFile(csv + "\n", `${exportBaseNameFor(scrapeResult)}_${EXPORTERS[kind].suffix}`, "text/csv");
+  });
+}
 
 document.getElementById("downloadCombinedCsv").addEventListener("click", async () => {
   if (!scrapeResult) return;

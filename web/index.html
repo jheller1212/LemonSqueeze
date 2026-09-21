@@ -442,6 +442,14 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Comments CSV
             </button>
+            <button class="btn-download" id="downloadEdges" title="Reply edge list: one row per comment with its parent (post or comment), depth, both authors, and seconds since the post and since the parent. Ready for igraph / networkx.">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Reply edge list
+            </button>
+            <button class="btn-download" id="downloadThreads" title="One row per thread: top-level comments and replies, maximum and mean depth, unique commenters, whether the original poster took part, largest sub-thread, first and median reply time, duration.">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Thread summaries
+            </button>
             <button class="btn-download" id="downloadManifest" title="Run report: scope, time window, chunks, counts, status, incomplete-comment posts. Keep it with the data.">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Run report (JSON)
@@ -474,6 +482,7 @@
   <script type="module" src="lib/design.js"></script>
   <script type="module" src="lib/runstats.js"></script>
   <script type="module" src="lib/pseudo.js"></script>
+  <script type="module" src="lib/threads.js"></script>
   <script defer src="runs.js"></script>
   <script defer src="archive.js"></script>
   <script defer src="runlog.js"></script>
