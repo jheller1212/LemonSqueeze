@@ -1253,6 +1253,29 @@ footer {
 
 .scope-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1.25rem; }
 @media (max-width: 760px) { .scope-cards { grid-template-columns: 1fr; } }
+.design-block { margin: 0.75rem 0 1rem; padding: 0.7rem 1rem; }
+.design-block summary { cursor: pointer; font-size: 0.95rem; line-height: 1.5; }
+.design-block summary .discover-sub { display: block; font-size: 0.82rem; color: var(--text-muted); font-weight: 400; }
+.design-body { display: flex; flex-direction: column; gap: 1rem; margin-top: 0.9rem; }
+.design-step { display: flex; flex-direction: column; gap: 0.5rem; }
+.design-step-title { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--lemon-dark, #b26a00); }
+.design-filters { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+.design-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.82rem; color: var(--text-muted); }
+.design-errors { margin: 0; font-size: 0.82rem; color: #c62828; min-height: 1em; }
+.design-totals { margin: 0; font-size: 0.88rem; line-height: 1.9; }
+.design-chip { display: inline-block; padding: 0.05rem 0.55rem; border-radius: 999px; background: rgba(253, 216, 53, 0.16); font-size: 0.8rem; white-space: nowrap; }
+.design-warn { display: block; font-size: 0.8rem; color: #b26a00; }
+.design-dim { color: var(--text-muted); font-size: 0.78rem; }
+.design-table-wrap { max-height: 16rem; overflow: auto; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); }
+.design-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.design-table th, .design-table td { padding: 0.25rem 0.6rem; text-align: right; border-bottom: 1px solid var(--glass-border); white-space: nowrap; }
+.design-table th:first-child, .design-table td:first-child { text-align: left; }
+.design-table thead th { position: sticky; top: 0; background: var(--bg-surface); }
+.design-preview-head { margin-top: 0.4rem; }
+.design-preview { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; max-height: 22rem; overflow: auto; font-size: 0.82rem; line-height: 1.5; }
+.design-preview li { padding: 0.45rem 0.6rem; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-surface); overflow-wrap: anywhere; }
+.design-preview mark { background: rgba(253, 216, 53, 0.55); color: inherit; padding: 0 0.1rem; border-radius: 2px; }
+
 .ids-block { margin: 0.75rem 0 1rem; padding: 0.7rem 1rem; }
 .ids-block summary { cursor: pointer; font-size: 0.95rem; line-height: 1.5; }
 .ids-block summary .discover-sub { display: block; font-size: 0.82rem; color: var(--text-muted); font-weight: 400; }
