@@ -259,6 +259,7 @@ function buildManifest(run, st) {
     chunks: run.chunks.map((c) => ({ index: c.i, from_utc: c.after === null ? null : new Date((c.after + 1) * 1000).toISOString(), to_utc: c.before === null ? null : new Date((c.before - 1) * 1000).toISOString(), status: c.status, posts: c.posts, error: c.error || undefined })),
     counts: { posts: st.total_posts, comments: st.total_comments, posts_with_incomplete_comments: incomplete.length, posts_reused_from_earlier_runs: st.reused, ...(run.plan.scope === "ids" ? { ids_requested: run.plan.idCount, ids_not_in_archive: (run.missingIds || []).length } : {}) },
     ids_not_in_archive: run.plan.scope === "ids" ? (run.missingIds || []) : undefined,
+    design: run.design ? { ...run.design, annotations: undefined } : undefined,
     comment_method: run.direct ? "browser → archive: windowed sweep of all comments in the subreddit (+30-day settle margin) grouped by post, then per-post walks for any post below 95% of Reddit's count; keyword and newest-N scopes use per-post walks" : "server batches: per-post walks",
     archive_requests_from_browser: run.direct ? Archive.stats.requests : 0,
     posts_with_incomplete_comments: incomplete,
@@ -1236,11 +1237,9 @@ document.getElementById("idsFile").addEventListener("change", async (e) => {
   refreshIdCount();
   e.target.value = "";
 });
-document.getElementById("idsBtn").addEventListener("click", () => {
-  refreshIdCount();
-  if (!idsParsed.length) return;
-  const ids = idsParsed.slice();
-  const includeComments = document.getElementById("idsComments").checked;
+// Start a run that fetches exactly these posts. `design` (optional) records where the
+// list came from: a sample or a matched design built in the Design panel.
+function startIdRun(ids, { includeComments = true, design = null } = {}) {
   const chunks = [];
   for (let i = 0; i < ids.length; i += 1000) chunks.push({ i: chunks.length, after: null, before: null, ids: ids.slice(i, i + 1000), status: "pending", posts: 0 });
   const run = {
@@ -1255,8 +1254,15 @@ document.getElementById("idsBtn").addEventListener("click", () => {
     progress: { chunkIdx: 0, modeIdx: 0, after: null, modeFetched: 0, seq: 0 },
     counts: { posts: 0, comments: 0 },
   };
+  if (design) run.design = design;
+  return startScrape({ run });
+}
+
+document.getElementById("idsBtn").addEventListener("click", () => {
+  refreshIdCount();
+  if (!idsParsed.length) return;
   document.getElementById("idsBlock").open = false;
-  startScrape({ run });
+  startIdRun(idsParsed.slice(), { includeComments: document.getElementById("idsComments").checked });
 });
 
 let currentRun = null;

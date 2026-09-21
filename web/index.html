@@ -127,7 +127,7 @@
             <span class="design-step-title">2 · Filters <span class="info-tooltip" data-tooltip="One filter per line: NAME = regex. Indented lines (or lines starting with |) continue the regex above. 'OR NAME' at the end includes an earlier filter. Filters see the post title and body. Word boundaries (\b) are Unicode-aware, as in Python and R.">?</span></span>
             <textarea id="designFilters" rows="6" class="input-keywords design-filters" spellcheck="false" placeholder="RIVAL = (\bai (girlfriend|boyfriend|partner)\b|\breplika\b)&#10;TOOL = (\bchatgpt\b|\bgpt\b)&#10;BROAD = (\ba\.?i\.?\b|\bchatbot\b) OR RIVAL OR TOOL"></textarea>
             <div class="ids-row">
-              <button type="button" class="btn-scrape" id="designRun"><span class="btn-text">Test filters</span></button>
+              <button type="button" class="btn-scrape" id="designRun"><span class="btn-text">Load population &amp; test filters</span></button>
               <label class="design-check"><input type="checkbox" id="designCase" /> case-sensitive</label>
               <span id="designStatus" class="ids-count"></span>
             </div>
@@ -144,6 +144,31 @@
               <span class="design-dim">Look for false positives before you commit to a term list.</span>
             </div>
             <ul id="designPreview" class="design-preview"></ul>
+          </div>
+          <div id="designSampleStep" class="design-step hidden">
+            <span class="design-step-title">4 · Draw a sample <span class="info-tooltip" data-tooltip="Simple random sampling without replacement inside each stratum, proportional allocation across strata (largest remainder). The same seed on the same population always gives the same sample; the seed goes into the manifest and the run report.">?</span></span>
+            <div class="ids-row">
+              <label class="runs-control">From <span class="select-wrapper"><select id="samplePool"></select></span></label>
+              <label class="runs-control">Size <input type="number" id="sampleSize" class="input-small" value="500" min="1" /></label>
+              <span class="select-wrapper"><select id="sampleUnit"><option value="n">posts</option><option value="pct">% of the pool</option></select></span>
+              <label class="runs-control">Seed <input type="number" id="sampleSeed" class="input-small" value="42" min="0" /></label>
+            </div>
+            <div class="ids-row">
+              <span class="design-dim">Stratify by</span>
+              <label class="design-check"><input type="checkbox" id="stratMonth" checked /> month</label>
+              <label class="design-check"><input type="checkbox" id="stratComments" /> comment-count quartile</label>
+              <label class="design-check"><input type="checkbox" id="stratScore" /> score quartile</label>
+              <button type="button" class="btn-scrape" id="sampleDraw"><span class="btn-text">Draw sample</span></button>
+            </div>
+            <div id="sampleResult" class="hidden">
+              <p id="sampleSummary" class="design-totals"></p>
+              <div id="sampleStrata" class="design-table-wrap"></div>
+              <div class="ids-row">
+                <button type="button" class="btn-download btn-download-small" id="sampleManifest">Download manifest (CSV)</button>
+                <label class="toggle-switch"><input type="checkbox" id="sampleComments" checked /><span class="toggle-slider"></span><span class="toggle-text">with comments</span></label>
+                <button type="button" class="btn-scrape" id="sampleFetch"><span class="btn-text">Fetch these posts</span></button>
+              </div>
+            </div>
           </div>
         </div>
       </details>

@@ -2,7 +2,7 @@
 // sample, match controls, and send the chosen posts to the comment fetch.
 // A population is either runs saved in this browser or CSV / CSV.gz files from disk;
 // files are read locally and never uploaded.
-import { parseFilters, monthOf, bodyState } from "./lib/design.js";
+import { parseFilters, monthOf, bodyState, stratifiedSample } from "./lib/design.js";
 import { readCsvFile } from "./lib/csvstream.js";
 
 const $ = (id) => document.getElementById(id);
@@ -118,7 +118,6 @@ async function runFilters() {
   errBox.textContent = "";
   const { filters, errors } = parseFilters($("designFilters").value);
   if (errors.length) { errBox.textContent = errors.join(" · "); return; }
-  if (!filters.length) { errBox.textContent = "Write at least one filter, e.g.  AI = \\bchatgpt\\b"; return; }
   if (filters.length > 30) { errBox.textContent = "At most 30 filters at a time."; return; }
   btn.disabled = true;
   $("designResults").classList.add("hidden");
@@ -192,10 +191,81 @@ function renderResults() {
     `</tbody></table>`;
   const sel = $("designPreviewFilter");
   sel.innerHTML = fs.map((f) => `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)}</option>`).join("");
-  sel.value = fs[fs.length - 1].name;
-  renderPreview();
+  document.querySelector(".design-preview-head").classList.toggle("hidden", fs.length === 0);
+  $("designPreview").classList.toggle("hidden", fs.length === 0);
+  if (fs.length) { sel.value = fs[fs.length - 1].name; renderPreview(); }
   $("designResults").classList.remove("hidden");
+  renderSampleStep();
 }
+
+// ---------------------------------------------------------------- step 4: sample
+function poolOf(value) {
+  if (value === "all") return state.records;
+  const [kind, name] = value.split(":");
+  const bit = state.filters.findIndex((f) => f.name === name);
+  return state.records.filter((r) => (kind === "hit") === !!(r.mask & (1 << bit)));
+}
+
+function renderSampleStep() {
+  const opts = [`<option value="all">the whole population (${state.records.length.toLocaleString()})</option>`];
+  for (const f of state.filters) {
+    const n = hitsOf(f.name).length;
+    opts.push(`<option value="hit:${escapeHtml(f.name)}">posts matching ${escapeHtml(f.name)} (${n.toLocaleString()})</option>`);
+    opts.push(`<option value="miss:${escapeHtml(f.name)}">posts NOT matching ${escapeHtml(f.name)} (${(state.records.length - n).toLocaleString()})</option>`);
+  }
+  $("samplePool").innerHTML = opts.join("");
+  $("sampleResult").classList.add("hidden");
+  $("designSampleStep").classList.remove("hidden");
+  state.sample = null;
+}
+
+function drawSample() {
+  const pool = poolOf($("samplePool").value);
+  const size = Math.max(1, Number($("sampleSize").value) || 0);
+  const by = [];
+  if ($("stratMonth").checked) by.push("month");
+  if ($("stratComments").checked) by.push("comments_q");
+  if ($("stratScore").checked) by.push("score_q");
+  const seed = Math.max(0, Math.floor(Number($("sampleSeed").value) || 0));
+  const opts = $("sampleUnit").value === "pct" ? { fraction: Math.min(size, 100) / 100, by, seed } : { n: size, by, seed };
+  const res = stratifiedSample(pool, opts);
+  const byId = new Map(pool.map((r) => [r.id, r]));
+  state.sample = {
+    kind: "sample", seed, stratify_by: by, pool: $("samplePool").selectedOptions[0].textContent.trim(), pool_size: pool.length, requested: res.requested,
+    population: state.sourceLabel, filters: state.filters.map((f) => ({ name: f.name, regex: f.source, or: f.refs })), case_sensitive: $("designCase").checked,
+    items: res.sample.map((x) => ({ id: x.id, group: "sample", stratum: x.stratum, match: "", rec: byId.get(x.id) })),
+  };
+  $("sampleSummary").innerHTML = `<strong>${res.sample.length.toLocaleString()}</strong> of ${pool.length.toLocaleString()} posts sampled · seed <strong>${seed}</strong> · ${by.length ? "stratified by " + by.map((b) => ({ month: "month", comments_q: "comment-count quartile", score_q: "score quartile" }[b])).join(" × ") : "simple random sample"}${$("sampleUnit").value === "n" && size > pool.length ? ` <span class="design-warn">You asked for ${size.toLocaleString()}; only ${pool.length.toLocaleString()} available, so this is the whole pool.</span>` : ""}`;
+  $("sampleStrata").innerHTML = `<table class="design-table"><thead><tr><th>stratum</th><th>in pool</th><th>sampled</th><th>rate</th></tr></thead><tbody>` +
+    res.strata.map((t) => `<tr><td>${escapeHtml(t.stratum)}</td><td>${t.population.toLocaleString()}</td><td>${t.sampled.toLocaleString()}</td><td>${t.population ? ((t.sampled / t.population) * 100).toFixed(1) + "%" : "–"}</td></tr>`).join("") + `</tbody></table>`;
+  $("sampleResult").classList.remove("hidden");
+}
+
+export function manifestCsv(design) {
+  const names = design.filters.map((f) => f.name);
+  const head = ["post_id", "sample_group", "match_post_id", "stratum", "seed", ...names.map((n) => "flag_" + n.toLowerCase()), "post_created_utc", "post_num_comments", "post_score", "post_body_state"];
+  const lines = [head.join(",")];
+  for (const it of design.items) {
+    const r = it.rec || {};
+    lines.push([it.id, it.group, it.match || "", it.stratum, design.seed, ...names.map((_, bit) => (r.mask & (1 << bit) ? "TRUE" : "FALSE")), r.ts ?? "", r.nc ?? "", r.score ?? "", r.body ?? ""].map(csvEscape).join(","));
+  }
+  return lines.join("\n") + "\n";
+}
+
+function designStamp() { return stamp(Date.now()); }
+
+$("sampleDraw").addEventListener("click", drawSample);
+$("sampleManifest").addEventListener("click", () => {
+  if (!state.sample) return;
+  downloadFile(manifestCsv(state.sample), `design_sample_seed${state.sample.seed}_${state.sample.items.length}posts_${designStamp()}_manifest.csv`, "text/csv");
+});
+$("sampleFetch").addEventListener("click", () => {
+  if (!state.sample || !state.sample.items.length) return;
+  const d = state.sample;
+  $("designBlock").open = false;
+  startIdRun(d.items.map((x) => x.id), { includeComments: $("sampleComments").checked,
+    design: { kind: d.kind, seed: d.seed, stratify_by: d.stratify_by, pool: d.pool, pool_size: d.pool_size, population: d.population, filters: d.filters, case_sensitive: d.case_sensitive, posts: d.items.length } });
+});
 
 function renderPreview() {
   const name = $("designPreviewFilter").value;
