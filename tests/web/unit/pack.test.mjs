@@ -10,6 +10,8 @@ test("methods paragraph states what was done, with the numbers", () => {
   const md = buildMethodsPack([base], { generatedAt: "2026-09-21T00:00:00Z" });
   assert.match(md, /^# Methods and ethics pack — r\/relationship_advice/);
   assert.match(md, /Arctic Shift archive of Reddit .* not the Reddit API/);
+  assert.match(md, /\(web app\) on 2026-09-20 \(the date the tool ran, not the period the data cover\)/); // never "between X and X"
+  assert.match(buildMethodsPack([{ ...base, started_at: "2026-09-19T23:00:00Z" }]), /between 2026-09-19 and 2026-09-20/);
   assert.match(md, /all posts created between 2024-01-01 and 2024-01-31 \(UTC\)/);
   assert.match(md, /1,000 posts and 25,000 comments/);
   assert.match(md, /10 of 1,000 posts \(1\.0%\) did not meet this/); // shares under 10 % keep one decimal

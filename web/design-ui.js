@@ -259,6 +259,13 @@ function renderControlStep() {
 
 function buildControls() {
   const tName = $("ctrlTargets").value, xName = $("ctrlExclude").value;
+  if (!tName || !xName || !state.filters.length) {
+    state.matched = null;
+    $("ctrlSummary").innerHTML = `<span class="design-warn">Choose the filter that defines your targets first. Filters come from step 2: write at least one and press “Load population &amp; test filters”.</span>`;
+    $("ctrlResult").classList.remove("hidden");
+    $("ctrlManifest").disabled = true; $("ctrlFetch").disabled = true;
+    return;
+  }
   const tBit = state.filters.findIndex((f) => f.name === tName), xBit = state.filters.findIndex((f) => f.name === xName);
   const targets = state.records.filter((r) => r.mask & (1 << tBit));
   const candidates = state.records.filter((r) => !(r.mask & (1 << xBit)) && !(r.mask & (1 << tBit)));
@@ -270,23 +277,30 @@ function buildControls() {
   const seed = Math.max(0, Math.floor(Number($("ctrlSeed").value) || 0));
   const res = matchControls(targets, candidates, { k, by, seed, population: state.records });
   const byId = new Map(state.records.map((r) => [r.id, r]));
-  const stratumOf = new Map(res.controls.map((c) => [c.match_post_id, c.stratum]));
+  // every target knows its stratum and how many controls it got, matched or not
+  const stratumOf = new Map([...res.controls.map((c) => [c.match_post_id, c.stratum]), ...res.shortfall.map((x) => [x.target, x.stratum])]);
+  const got = new Map();
+  for (const c of res.controls) got.set(c.match_post_id, (got.get(c.match_post_id) || 0) + 1);
+  const unmatched = targets.filter((t) => !got.get(t.id)).length, partly = targets.filter((t) => got.get(t.id) && got.get(t.id) < k).length;
   state.matched = {
     kind: "matched_controls", seed, k, match_on: by, targets_filter: tName, controls_exclude_filter: xName, targets: targets.length, controls: res.controls.length, shortfall: res.shortfall.length,
     population: state.sourceLabel, filters: state.filters.map((f) => ({ name: f.name, regex: f.source, or: f.refs })), case_sensitive: $("designCase").checked,
-    items: targets.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).map((t) => ({ id: t.id, group: "target", stratum: stratumOf.get(t.id) || "", match: "", rec: t }))
+    targets_without_control: unmatched, targets_with_fewer_controls: partly,
+    items: targets.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).map((t) => ({ id: t.id, group: "target", stratum: stratumOf.get(t.id) || "", match: "", rec: t, controls_matched: got.get(t.id) || 0 }))
       .concat(res.controls.map((c) => ({ id: c.id, group: "control", stratum: c.stratum, match: c.match_post_id, rec: byId.get(c.id) }))),
   };
   const label = { month: "month", comments_q: "comment-count quartile", score_q: "score quartile" };
   $("ctrlSummary").innerHTML = `<strong>${targets.length.toLocaleString()}</strong> targets (${escapeHtml(tName)}) · <strong>${res.controls.length.toLocaleString()}</strong> controls (${k} per target, not matching ${escapeHtml(xName)}) · matched on ${by.length ? by.map((b) => label[b]).join(" × ") : "nothing (simple random controls)"} · seed <strong>${seed}</strong>` +
-    (res.shortfall.length ? ` <span class="design-warn">${res.shortfall.length.toLocaleString()} control slots could not be filled: their stratum ran out of eligible posts. They are left empty rather than filled from another stratum; loosen the matching or lower k.</span>` : "") +
+    (res.shortfall.length ? ` <span class="design-warn">${res.shortfall.length.toLocaleString()} control slot${res.shortfall.length > 1 ? "s" : ""} could not be filled: ${unmatched ? `<strong>${unmatched.toLocaleString()} target${unmatched > 1 ? "s have" : " has"} no control at all</strong>` : "every target has at least one control"}${partly ? `, ${partly.toLocaleString()} ha${partly > 1 ? "ve" : "s"} fewer than ${k}` : ""}. Their stratum ran out of eligible posts; slots are left empty rather than filled from another stratum. The manifest lists each target's stratum and <code>controls_matched</code>. Loosen the matching, lower k, or report the unmatched targets.</span>` : "") +
     (!targets.length ? ` <span class="design-warn">No targets: ${escapeHtml(tName)} matches nothing in this population.</span>` : "");
-  $("ctrlResult").classList.toggle("hidden", !targets.length);
+  $("ctrlResult").classList.remove("hidden");
+  $("ctrlManifest").disabled = !targets.length; $("ctrlFetch").disabled = !targets.length;
+  if (!targets.length) state.matched = null;
 }
 
 $("ctrlBuild").addEventListener("click", buildControls);
 $("ctrlManifest").addEventListener("click", () => {
-  const d = state.matched; if (!d) return;
+  const d = state.matched; if (!d || !d.items.length) return;
   downloadFile(manifestCsv(d), `design_matched_${d.targets}targets_${d.controls}controls_seed${d.seed}_${designStamp()}_manifest.csv`, "text/csv");
 });
 $("ctrlFetch").addEventListener("click", () => fetchDesign(state.matched, $("ctrlWithComments").checked));
@@ -315,11 +329,11 @@ function drawSample() {
 
 export function manifestCsv(design) {
   const names = design.filters.map((f) => f.name);
-  const head = ["post_id", "sample_group", "match_post_id", "stratum", "seed", ...names.map((n) => "flag_" + n.toLowerCase()), "post_created_utc", "post_num_comments", "post_score", "post_body_state"];
+  const head = ["post_id", "sample_group", "match_post_id", "stratum", "controls_matched", "seed", ...names.map((n) => "flag_" + n.toLowerCase()), "post_created_utc", "post_num_comments", "post_score", "post_body_state"];
   const lines = [head.join(",")];
   for (const it of design.items) {
     const r = it.rec || {};
-    lines.push([it.id, it.group, it.match || "", it.stratum, design.seed, ...names.map((_, bit) => (r.mask & (1 << bit) ? "TRUE" : "FALSE")), r.ts ?? "", r.nc ?? "", r.score ?? "", r.body ?? ""].map(csvEscape).join(","));
+    lines.push([it.id, it.group, it.match || "", it.stratum, it.controls_matched ?? "", design.seed, ...names.map((_, bit) => (r.mask & (1 << bit) ? "TRUE" : "FALSE")), r.ts ?? "", r.nc ?? "", r.score ?? "", r.body ?? ""].map(csvEscape).join(","));
   }
   return lines.join("\n") + "\n";
 }

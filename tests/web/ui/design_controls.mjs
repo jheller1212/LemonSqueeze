@@ -62,11 +62,25 @@ check("every control is from its target's month and points at a real target", d.
 const again = await b.page(`document.getElementById("ctrlBuild").click(); return window.DesignState.matched.items.map(x => x.id + ":" + x.group)`);
 check("same seed → same design", JSON.stringify(again) === JSON.stringify(d.ids));
 
+// asking for more controls than a stratum holds: the shortfall is said on screen, per target, and nothing is filled from elsewhere
+const starved = await b.page(`document.getElementById("ctrlK").value = 10; document.getElementById("ctrlBuild").click();
+  const m = window.DesignState.matched; const t = m.items.filter(x => x.group === "target");
+  const out = { text: document.getElementById("ctrlSummary").innerText, slots: m.shortfall, without: m.targets_without_control, fewer: m.targets_with_fewer_controls,
+    consistent: t.reduce((n, x) => n + x.controls_matched, 0) === m.controls && t.every(x => x.stratum !== ""), sameStratum: m.items.filter(x => x.group === "control").every(c => c.stratum === t.find(x => x.id === c.match).stratum) };
+  document.getElementById("ctrlK").value = 1; document.getElementById("ctrlBuild").click(); return out;`);
+check("a shortfall is reported on screen with the number of affected targets", starved.slots > 0 && /could not be filled/.test(starved.text) && (starved.without + starved.fewer) > 0 && /controls_matched/.test(starved.text), starved.text.slice(-260));
+check("every target keeps its stratum and its count of matched controls; controls never leave their stratum", starved.consistent && starved.sameStratum);
+// an empty choice cannot produce an empty design
+const empty = await b.page(`const sel = document.getElementById("ctrlTargets"); const keep = sel.value; sel.insertAdjacentHTML("afterbegin", '<option value=""></option>'); sel.value = ""; document.getElementById("ctrlBuild").click();
+  const out = { text: document.getElementById("ctrlSummary").innerText, manifestDisabled: document.getElementById("ctrlManifest").disabled, fetchDisabled: document.getElementById("ctrlFetch").disabled, matched: window.DesignState.matched };
+  sel.querySelector('option[value=""]').remove(); sel.value = keep; document.getElementById("ctrlBuild").click(); return out;`);
+check("building without a target filter is refused with guidance, and nothing can be downloaded or fetched", /Choose the filter that defines your targets/.test(empty.text) && empty.manifestDisabled && empty.fetchDisabled && empty.matched === null, empty.text);
+
 // manifest
 await b.page(`document.getElementById("ctrlManifest").click();`); await sleep(1500);
 const mf = b.files().find((f) => f.endsWith("_manifest.csv"));
 check("manifest downloaded", !!mf && /design_matched_/.test(mf), String(mf));
-if (mf) { const rows = parseCsv(readFileSync(join(dl, mf), "utf8")); check("manifest has both groups and match ids", rows[0].includes("flag_gpt") && rows.slice(1).filter((r) => r[1] === "control").every((r) => r[2]) && rows.slice(1).filter((r) => r[1] === "target").length === d.targets); }
+if (mf) { const rows = parseCsv(readFileSync(join(dl, mf), "utf8")); check("manifest has both groups, match ids and controls_matched", rows[0].includes("flag_gpt") && rows[0].includes("controls_matched") && rows.slice(1).filter((r) => r[1] === "target").every((r) => r[4] === "1") && rows.slice(1).filter((r) => r[1] === "control").every((r) => r[2]) && rows.slice(1).filter((r) => r[1] === "target").length === d.targets); }
 
 // fetch both groups (posts only, to keep the check quick) and inspect the exports
 await b.page(`window.showSaveFilePicker = undefined; document.getElementById("ctrlWithComments").checked = false; document.getElementById("ctrlFetch").click();`);
