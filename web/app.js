@@ -400,8 +400,10 @@ function renderRunsChips(runs) {
   if (active) chips.push(`<span class="runs-chip live">running now: r/${escapeHtml(active.subreddit)} · ${escapeHtml(active.plan?.segment || scopeText(active.plan))}${active.batch ? ` (run ${active.batch.index + 1} of ${active.batch.total})` : ""}</span>`);
   const queued = runs.filter((r) => r.status === "queued").length;
   if (queued) chips.push(`<span class="runs-chip queued">${queued} queued</span>`);
-  const attention = runs.filter(needsAttention).length + runs.filter((r) => r.status === "running" && !isActive(r)).length;
-  if (attention) chips.push(`<span class="runs-chip attention">${attention} paused or failed</span>`);
+  const paused = runs.filter((r) => r.status === "stopped" || (r.status === "running" && !isActive(r))).length;
+  const failedRuns = runs.filter((r) => r.status === "failed").length;
+  if (paused) chips.push(`<span class="runs-chip">${paused} paused</span>`);
+  if (failedRuns) chips.push(`<span class="runs-chip attention">${failedRuns} failed</span>`);
   const done = runs.filter(isDone).length;
   if (done) chips.push(`<span class="runs-chip">${done} complete</span>`);
   document.getElementById("runsChips").innerHTML = chips.join("");
@@ -409,6 +411,8 @@ function renderRunsChips(runs) {
 
 function renderRunsList() {
   const list = document.getElementById("runsList");
+  const keepScroll = list.scrollTop;
+  queueMicrotask(() => { list.scrollTop = keepScroll; });
   const q = runsUi.filter.trim().toLowerCase();
   const runs = q
     ? runsUi.runs.filter((r) => r.subreddit.toLowerCase().includes(q) || (r.settings?.keywords || []).some((k) => k.toLowerCase().includes(q)) || (r.plan?.segment || "").toLowerCase().includes(q))
@@ -676,6 +680,7 @@ function updateProgress(message, percent = null) {
 function showError(msg) {
   errorSection.classList.remove("hidden");
   errorText.textContent = msg;
+  errorSection.scrollIntoView({ behavior: "smooth", block: "center" }); // it used to appear below a long page, unseen
   RunLog.event("error", "ui_error", { error: String(msg).slice(0, 300) });
 }
 
@@ -1722,6 +1727,8 @@ async function checkedExtraCommunities(primary) {
   const checked = [];
   for (const name of names) {
     let r;
+    updateProgress(`Checking r/${name} in the archive…`, null);
+    progressSection.classList.remove("hidden");
     try { r = await apiCall({ action: "peek", input: "r/" + name }, 2, { background: true }); } catch (err) { throw new Error(`Could not check r/${name} (${err.message}). Try again, or remove it.`); }
     if (!r || r.type !== "subreddit" || !r.found) throw new Error(`r/${name} was not found in the archive. Check the spelling, or remove it.`);
     checked.push(r.name || name);
@@ -1730,6 +1737,15 @@ async function checkedExtraCommunities(primary) {
 }
 
 async function startScrape(opts = {}) {
+  if (abortController || startScrape.starting) {
+    showError("A collection is already running in this tab. Wait for it to finish or press Stop first; queued runs of a batch start by themselves.");
+    return;
+  }
+  startScrape.starting = true; // planning is asynchronous (counts, community checks): hold the door until the run is live
+  try { return await startScrapeLocked(opts); } finally { startScrape.starting = false; }
+}
+
+async function startScrapeLocked(opts = {}) {
   const resumeId = opts.resumeId || null;
   let run;
   let allPosts = [];
@@ -1776,6 +1792,10 @@ async function startScrape(opts = {}) {
   progressFill.style.width = "0%";
   updateProgress(resumeId && allPosts.length ? `Resuming… (${allPosts.length.toLocaleString()} posts already collected)` : run.batch ? `Starting run ${run.batch.index + 1} of ${run.batch.total} (${run.plan.segment})…` : "Starting squeeze…");
   await RunStore.saveRun(run);
+  // Show it at once: a chained batch run used to look "queued" while it was already collecting
+  renderRunsPanel();
+  progressSection.scrollIntoView({ behavior: "smooth", block: "center" }); // started from the results view or a panel, the progress card is off-screen
+  const panelTimer = setInterval(() => { if (abortController) renderRunsPanel(); }, 5000);
 
   // Comment trees are written to IndexedDB and then dropped from memory, so the
   // tab's RAM stays bounded however large the run; exports re-read the store.
@@ -2272,12 +2292,14 @@ async function startScrape(opts = {}) {
     scrapeBtn.classList.remove("hidden");
     stopBtn.classList.add("hidden");
     abortController = null;
+    clearInterval(panelTimer);
     try { await RunStore.saveRun(run); } catch { /* best effort */ }
     RunLog.detach();
     renderRunsPanel();
     if (scrapeResult && scrapeResult.run && scrapeResult.run.id === run.id) renderRunLog(run);
   }
   if (chainTo) {
+    startScrape.starting = false; // this run is over; the next one of the batch may take the tab
     await new Promise((r) => setTimeout(r, 1500));
     await startScrape({ resumeId: chainTo.id });
   }
@@ -2677,9 +2699,20 @@ function showResults(data) {
     const failed = run.chunks.filter((c) => c.status === "failed");
     const chunksNote = run.chunks.length > 1 ? ` ${run.chunks.filter((c) => c.status === "done").length} of ${run.chunks.length} time chunks finished.` : "";
     const gaps = failed.length ? ` Missing: ${failed.map((c) => `${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}`).join(", ")} — use "Retry failed chunks" in Your runs.` : "";
-    const saved = RunStore.isPersistent() ? " Saved in this browser; the combined CSV was downloaded automatically when the run finished." : "";
-    statusEl.innerHTML = `<span class="run-badge ${statusClass(run.status)}">${statusLabel(run.status)}</span>r/${escapeHtml(run.subreddit)} · ${escapeHtml(scopeText(run.plan))}.${chunksNote}${gaps}${run.status === "complete" || run.status === "complete_with_gaps" ? saved : " Resume continues from the saved cursor."}`;
-    document.getElementById("resultsSubtitle").textContent = run.status === "complete"
+    const nPosts = data.summary ? data.summary.total_posts : (run.counts?.posts || 0);
+    const saved = !nPosts ? "" : RunStore.isPersistent() ? " Saved in this browser; the combined CSV was downloaded automatically when the run finished." : "";
+    const logSum = RunLog.summary(run);
+    const retried = (run.log || []).filter((e) => e.type === "chunk_error").length;
+    const trouble = retried || logSum.archive_shed
+      ? ` <span class="run-trouble">The archive was busy during this run: ${retried ? `${retried} chunk attempt${retried > 1 ? "s" : ""} failed and ${failed.length ? "not all could be" : "were"} retried${failed.length ? "" : " successfully"}` : "no chunk failed"}${logSum.archive_shed ? `, ${logSum.archive_shed.toLocaleString()} request${logSum.archive_shed > 1 ? "s were" : " was"} refused and repeated` : ""}. ${failed.length ? "" : "Every time span was covered in the end; the run log has the details."}</span>`
+      : "";
+    const empty = !nPosts && (run.status === "complete" || run.status === "complete_with_gaps")
+      ? ` <span class="run-empty"><strong>No posts were found.</strong> ${run.settings.keywords?.length ? `The archive's full-text search returned nothing for ${run.settings.keywords.map((k) => `“${escapeHtml(k)}”`).join(", ")} in this scope${failed.length ? ", and some time spans could not be searched at all (see Missing above)" : ""}. That search is not a census: to be sure, collect the scope without keywords and test your terms in “Design a study from a population”.` : failed.length ? "Some time spans could not be read (see Missing above); retry them before concluding the scope is empty." : "The scope holds no archived posts."} There is no file to download.</span>`
+      : "";
+    statusEl.innerHTML = `<span class="run-badge ${statusClass(run.status)}">${statusLabel(run.status)}</span>r/${escapeHtml(run.subreddit)} · ${escapeHtml(scopeText(run.plan))}.${chunksNote}${gaps}${run.status === "complete" || run.status === "complete_with_gaps" ? saved : " Resume continues from the saved cursor."}${trouble}${empty}`;
+    document.getElementById("resultsSubtitle").textContent = !nPosts && run.status !== "stopped" && run.status !== "failed"
+      ? "The run finished without finding any posts."
+      : run.status === "complete"
       ? "Your dataset is ready. Keep the run report with the data."
       : run.status === "complete_with_gaps" ? "Finished, but some time chunks are missing — retry them before you analyse."
       : "Partial dataset — you can download it now and resume later.";
