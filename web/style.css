@@ -1358,6 +1358,8 @@ body.has-runs .hero-subtitle { display: none; }
 .run-badge.gaps { background: rgba(249, 168, 37, 0.2); color: #b26a00; }
 .run-badge.stopped, .run-badge.running { background: rgba(120, 120, 120, 0.18); color: var(--text-muted); }
 .run-badge.failed { background: rgba(211, 47, 47, 0.16); color: #c62828; }
+.authors-body { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.6rem; }
+
 .content-availability { margin: 0 0 0.9rem; font-size: 0.85rem; line-height: 1.6; }
 .content-availability summary { cursor: pointer; }
 .content-availability .estimate-warn { display: block; }
