@@ -1409,6 +1409,9 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
   const mime = canGzip ? "application/gzip" : (isJson ? "application/json" : EXPORTERS[kind].mime);
   const encoder = new TextEncoder();
 
+  // Columns a study design attached to its posts (sample_group, match_post_id, flag_*): the union over the runs in this file.
+  const designCols = Array.from(new Set(runs.flatMap((r) => r.design?.columns || [])));
+
   // Produce the file as a sequence of text pieces.
   async function produce(emit) {
     let n = 0;
@@ -1419,8 +1422,9 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
       for (let k = 0; k < runs.length; k++) {
         const r = runs[k];
         const tag = merged ? { run_label: runLabel(r), run_id: r.id } : {};
+        const ann = r.design?.annotations || null;
         await RunStore.iteratePosts(r.id, 500, async (batch) => {
-          for (const p of batch) { await emit((first ? "" : ",\n") + JSON.stringify({ ...stripStoreFields(p), ...tag }, null, 2)); first = false; }
+          for (const p of batch) { await emit((first ? "" : ",\n") + JSON.stringify({ ...stripStoreFields(p), ...tag, ...(ann ? ann[p.id] || {} : {}) }, null, 2)); first = false; }
           n += batch.length;
           status(`Preparing download… ${where(k)}${n.toLocaleString()} posts`);
         });
@@ -1432,15 +1436,16 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
       for (let k = 0; k < runs.length; k++) {
         const r = runs[k];
         const extra = merged ? { run_label: runLabel(r), run_id: r.id } : undefined;
+        const ann = r.design?.annotations || null;
         await RunStore.iteratePosts(r.id, 500, async (batch) => {
-          const text = fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra });
+          const text = fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra, extraCols: designCols, extraFor: ann ? (p) => ann[p.id] : undefined });
           if (text) await emit(text + "\n"); // an empty batch must not leave a blank line
           first = false;
           n += batch.length;
           status(`Preparing download… ${where(k)}${n.toLocaleString()} posts`);
         });
       }
-      if (first) await emit(fn([], false, { subreddit: run.subreddit, extra: merged ? { run_label: "", run_id: "" } : undefined }) + "\n");
+      if (first) await emit(fn([], false, { subreddit: run.subreddit, extra: merged ? { run_label: "", run_id: "" } : undefined, extraCols: designCols }) + "\n");
     }
   }
 
@@ -2536,10 +2541,11 @@ function postsToCSV(posts, keywordsEnabled, opts = {}) {
     headers.push("relevance_score", "matched_categories", "matched_keywords");
   }
 
-  // extra trailing columns, e.g. run_label/run_id in a merged export
-  const extra = opts.extra || {};
-  headers.push(...Object.keys(extra));
+  // extra trailing columns: constant per file (opts.extra, e.g. run_label) and per post (opts.extraCols + opts.extraFor, e.g. sample_group)
+  const extraBase = opts.extra || {};
+  headers.push(...Object.keys(extraBase), ...(opts.extraCols || []));
   const rows = posts.map((p) => {
+    const extra = opts.extraFor ? { ...extraBase, ...(opts.extraFor(p) || {}) } : extraBase;
     const dp = toDateParts(p.created_datetime);
     const row = {
       id: p.id,
@@ -2606,10 +2612,11 @@ function combinedToCSV(posts, keywordsEnabled, opts = {}) {
   }
 
   // extra trailing columns, e.g. run_label/run_id in a merged export
-  const extra = opts.extra || {};
-  headers.push(...Object.keys(extra));
+  const extraBase = opts.extra || {};
+  headers.push(...Object.keys(extraBase), ...(opts.extraCols || []));
   const rows = [];
   for (const p of posts) {
+    const extra = opts.extraFor ? { ...extraBase, ...(opts.extraFor(p) || {}) } : extraBase;
     const pdp = toDateParts(p.created_datetime);
     const postFields = {
       post_id: p.id,
@@ -2706,10 +2713,11 @@ function commentsToCSV(posts, keywordsEnabled, opts = {}) {
   }
 
   // extra trailing columns, e.g. run_label/run_id in a merged export
-  const extra = opts.extra || {};
-  headers.push(...Object.keys(extra));
+  const extraBase = opts.extra || {};
+  headers.push(...Object.keys(extraBase), ...(opts.extraCols || []));
   const rows = [];
   for (const p of posts) {
+    const extra = opts.extraFor ? { ...extraBase, ...(opts.extraFor(p) || {}) } : extraBase;
     for (const c of p.comments || []) {
       const dp = toDateParts(c.created_datetime);
       const row = {

@@ -170,6 +170,30 @@
               </div>
             </div>
           </div>
+          <div id="designControlStep" class="design-step hidden">
+            <span class="design-step-title">5 · Match a control group <span class="info-tooltip" data-tooltip="For every target post, k control posts are drawn from the same stratum (month and/or quartile of that month's population), without replacement, from posts that do not match the exclusion filter. Pools are shuffled once per stratum with the seed; targets are served in post-id order. If a stratum runs out, the shortfall is reported, never filled from elsewhere.">?</span></span>
+            <div class="ids-row">
+              <label class="runs-control">Targets <span class="select-wrapper"><select id="ctrlTargets"></select></span></label>
+              <label class="runs-control">Controls must not match <span class="select-wrapper"><select id="ctrlExclude"></select></span></label>
+            </div>
+            <div class="ids-row">
+              <label class="runs-control">Controls per target <input type="number" id="ctrlK" class="input-small" value="2" min="1" max="10" /></label>
+              <label class="runs-control">Seed <input type="number" id="ctrlSeed" class="input-small" value="42" min="0" /></label>
+              <span class="design-dim">Match on</span>
+              <label class="design-check"><input type="checkbox" id="ctrlMonth" checked /> month</label>
+              <label class="design-check"><input type="checkbox" id="ctrlComments" checked /> comment-count quartile</label>
+              <label class="design-check"><input type="checkbox" id="ctrlScore" /> score quartile</label>
+              <button type="button" class="btn-scrape" id="ctrlBuild"><span class="btn-text">Build matched design</span></button>
+            </div>
+            <div id="ctrlResult" class="hidden">
+              <p id="ctrlSummary" class="design-totals"></p>
+              <div class="ids-row">
+                <button type="button" class="btn-download btn-download-small" id="ctrlManifest">Download manifest (CSV)</button>
+                <label class="toggle-switch"><input type="checkbox" id="ctrlWithComments" checked /><span class="toggle-slider"></span><span class="toggle-text">with comments</span></label>
+                <button type="button" class="btn-scrape" id="ctrlFetch"><span class="btn-text">Fetch targets + controls</span></button>
+              </div>
+            </div>
+          </div>
         </div>
       </details>
 

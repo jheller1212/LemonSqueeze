@@ -2,7 +2,7 @@
 // sample, match controls, and send the chosen posts to the comment fetch.
 // A population is either runs saved in this browser or CSV / CSV.gz files from disk;
 // files are read locally and never uploaded.
-import { parseFilters, monthOf, bodyState, stratifiedSample } from "./lib/design.js";
+import { parseFilters, monthOf, bodyState, stratifiedSample, matchControls } from "./lib/design.js";
 import { readCsvFile } from "./lib/csvstream.js";
 
 const $ = (id) => document.getElementById(id);
@@ -217,7 +217,77 @@ function renderSampleStep() {
   $("sampleResult").classList.add("hidden");
   $("designSampleStep").classList.remove("hidden");
   state.sample = null;
+  renderControlStep();
 }
+
+// What a fetched run needs to label its rows: the columns and one record per post.
+function annotate(design) {
+  const names = design.filters.map((f) => f.name);
+  const columns = ["sample_group", "match_post_id", ...names.map((n) => "flag_" + n.toLowerCase())];
+  const annotations = {};
+  for (const it of design.items) {
+    const a = { sample_group: it.group, match_post_id: it.match || "" };
+    names.forEach((n, bit) => { a["flag_" + n.toLowerCase()] = !!((it.rec?.mask || 0) & (1 << bit)); });
+    annotations[it.id] = a;
+  }
+  return { columns, annotations };
+}
+
+function fetchDesign(d, includeComments) {
+  if (!d || !d.items.length) return;
+  $("designBlock").open = false;
+  const { items, ...meta } = d;
+  startIdRun(items.map((x) => x.id), { includeComments, design: { ...meta, posts: items.length, ...annotate(d) } });
+}
+
+// ---------------------------------------------------------------- step 5: matched controls
+function renderControlStep() {
+  const step = $("designControlStep");
+  if (!state.filters.length) { step.classList.add("hidden"); return; } // a control group needs a definition of "target"
+  const fopts = state.filters.map((f) => `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)} (${hitsOf(f.name).length.toLocaleString()})</option>`).join("");
+  $("ctrlTargets").innerHTML = fopts;
+  $("ctrlExclude").innerHTML = fopts;
+  // default: targets and exclusion are the broadest (last) filter, so no control can be a near-miss of the target definition
+  const last = state.filters[state.filters.length - 1].name;
+  $("ctrlTargets").value = last; $("ctrlExclude").value = last;
+  $("ctrlResult").classList.add("hidden");
+  step.classList.remove("hidden");
+  state.matched = null;
+}
+
+function buildControls() {
+  const tName = $("ctrlTargets").value, xName = $("ctrlExclude").value;
+  const tBit = state.filters.findIndex((f) => f.name === tName), xBit = state.filters.findIndex((f) => f.name === xName);
+  const targets = state.records.filter((r) => r.mask & (1 << tBit));
+  const candidates = state.records.filter((r) => !(r.mask & (1 << xBit)) && !(r.mask & (1 << tBit)));
+  const by = [];
+  if ($("ctrlMonth").checked) by.push("month");
+  if ($("ctrlComments").checked) by.push("comments_q");
+  if ($("ctrlScore").checked) by.push("score_q");
+  const k = Math.min(10, Math.max(1, Math.floor(Number($("ctrlK").value) || 2)));
+  const seed = Math.max(0, Math.floor(Number($("ctrlSeed").value) || 0));
+  const res = matchControls(targets, candidates, { k, by, seed, population: state.records });
+  const byId = new Map(state.records.map((r) => [r.id, r]));
+  const stratumOf = new Map(res.controls.map((c) => [c.match_post_id, c.stratum]));
+  state.matched = {
+    kind: "matched_controls", seed, k, match_on: by, targets_filter: tName, controls_exclude_filter: xName, targets: targets.length, controls: res.controls.length, shortfall: res.shortfall.length,
+    population: state.sourceLabel, filters: state.filters.map((f) => ({ name: f.name, regex: f.source, or: f.refs })), case_sensitive: $("designCase").checked,
+    items: targets.slice().sort((a, b) => (a.id < b.id ? -1 : 1)).map((t) => ({ id: t.id, group: "target", stratum: stratumOf.get(t.id) || "", match: "", rec: t }))
+      .concat(res.controls.map((c) => ({ id: c.id, group: "control", stratum: c.stratum, match: c.match_post_id, rec: byId.get(c.id) }))),
+  };
+  const label = { month: "month", comments_q: "comment-count quartile", score_q: "score quartile" };
+  $("ctrlSummary").innerHTML = `<strong>${targets.length.toLocaleString()}</strong> targets (${escapeHtml(tName)}) · <strong>${res.controls.length.toLocaleString()}</strong> controls (${k} per target, not matching ${escapeHtml(xName)}) · matched on ${by.length ? by.map((b) => label[b]).join(" × ") : "nothing (simple random controls)"} · seed <strong>${seed}</strong>` +
+    (res.shortfall.length ? ` <span class="design-warn">${res.shortfall.length.toLocaleString()} control slots could not be filled: their stratum ran out of eligible posts. They are left empty rather than filled from another stratum; loosen the matching or lower k.</span>` : "") +
+    (!targets.length ? ` <span class="design-warn">No targets: ${escapeHtml(tName)} matches nothing in this population.</span>` : "");
+  $("ctrlResult").classList.toggle("hidden", !targets.length);
+}
+
+$("ctrlBuild").addEventListener("click", buildControls);
+$("ctrlManifest").addEventListener("click", () => {
+  const d = state.matched; if (!d) return;
+  downloadFile(manifestCsv(d), `design_matched_${d.targets}targets_${d.controls}controls_seed${d.seed}_${designStamp()}_manifest.csv`, "text/csv");
+});
+$("ctrlFetch").addEventListener("click", () => fetchDesign(state.matched, $("ctrlWithComments").checked));
 
 function drawSample() {
   const pool = poolOf($("samplePool").value);
@@ -259,13 +329,7 @@ $("sampleManifest").addEventListener("click", () => {
   if (!state.sample) return;
   downloadFile(manifestCsv(state.sample), `design_sample_seed${state.sample.seed}_${state.sample.items.length}posts_${designStamp()}_manifest.csv`, "text/csv");
 });
-$("sampleFetch").addEventListener("click", () => {
-  if (!state.sample || !state.sample.items.length) return;
-  const d = state.sample;
-  $("designBlock").open = false;
-  startIdRun(d.items.map((x) => x.id), { includeComments: $("sampleComments").checked,
-    design: { kind: d.kind, seed: d.seed, stratify_by: d.stratify_by, pool: d.pool, pool_size: d.pool_size, population: d.population, filters: d.filters, case_sensitive: d.case_sensitive, posts: d.items.length } });
-});
+$("sampleFetch").addEventListener("click", () => fetchDesign(state.sample, $("sampleComments").checked));
 
 function renderPreview() {
   const name = $("designPreviewFilter").value;
