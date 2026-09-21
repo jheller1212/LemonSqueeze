@@ -26,6 +26,8 @@ jobs:
         with:
           node-version: "22"
       # every script the page or the functions load must at least parse
-      - run: for f in web/*.js web/lib/*.js netlify/functions/*.mjs tests/web/*.mjs tests/web/ui/*.mjs; do node --check "$f" || exit 1; done
+      # `node --check x.js` silently skips files that use import/export (it re-parses them as modules without
+      # checking), so every script goes through tests/web/syntax.sh, which checks module files as modules
+      - run: bash tests/web/syntax.sh
       # pure logic (filters, sampling, controls, CSV streaming, ...) is unit-tested
       - run: node --test "tests/web/unit/*.test.mjs"
