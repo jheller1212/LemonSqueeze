@@ -380,11 +380,22 @@
         </details>
         <div id="summary" class="stats-grid"></div>
 
+        <details id="contentAvailability" class="content-availability hidden">
+          <summary id="contentSummary"></summary>
+          <p class="run-log-hint">Bodies as the archive holds them: “[removed]” was taken down by moderators or Reddit, “[deleted]” by the author, before the archive made its copy. The run report records these shares and the monthly table.</p>
+          <div id="contentTable" class="design-table-wrap"></div>
+        </details>
+
         <p id="exportSizes" class="export-sizes"></p>
         <label class="toggle-switch export-gzip" title="Compress while downloading. R (read.csv / readr) and pandas open .csv.gz directly; Excel does not.">
           <input type="checkbox" id="gzipToggle" />
           <span class="toggle-slider"></span>
           <span class="toggle-text">Compress downloads (.gz) — about 5–10× smaller; R and pandas read .gz directly, Excel does not</span>
+        </label>
+        <label class="toggle-switch export-gzip" title="Adds trailing columns computed from the row itself; the 45 schema columns are unchanged.">
+          <input type="checkbox" id="analysisToggle" />
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">Add analysis columns — post_body_state and comment_body_state (intact / removed / deleted / empty)</span>
         </label>
         <div class="download-bar">
           <button class="btn-download btn-download-primary" id="downloadCombinedCsv" title="Tidy CSV: one row per comment joined with parent post. Ready for R (tidyverse) or Python (pandas). Recommended for most research.">
@@ -433,6 +444,8 @@
   </div>
 
   <script type="module" src="mappers.js"></script>
+  <script type="module" src="lib/design.js"></script>
+  <script type="module" src="lib/runstats.js"></script>
   <script defer src="runs.js"></script>
   <script defer src="archive.js"></script>
   <script defer src="runlog.js"></script>
