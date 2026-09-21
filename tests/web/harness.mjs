@@ -41,7 +41,19 @@ export async function launch({ port = 9400 + Math.floor(Math.random() * 400), do
     if (r.result?.exceptionDetails) throw new Error("page: " + (r.result.exceptionDetails.exception?.description?.split("\n")[0] || r.result.exceptionDetails.text));
     return r.result?.result?.value;
   };
-  const goto = async (url, wait = 2500) => { await send("Page.navigate", { url }); await sleep(wait); };
+  // Wait for the load event, not for a fixed time: deferred and module scripts have all run once readyState is "complete".
+  const goto = async (url, settle = 400) => {
+    await send("Page.navigate", { url });
+    const t0 = Date.now();
+    for (;;) {
+      await sleep(150);
+      let state = "";
+      try { state = await page(`return document.readyState + "|" + location.href`); } catch { /* navigating */ }
+      if (state.startsWith("complete|") && !state.endsWith("about:blank")) break;
+      if (Date.now() - t0 > 30000) throw new Error(`page did not finish loading: ${url}`);
+    }
+    await sleep(settle);
+  };
   const waitFor = async (body, { timeout = 60000, every = 500, arg } = {}) => {
     const t0 = Date.now();
     for (;;) { const v = await page(body, arg); if (v) return v; if (Date.now() - t0 > timeout) throw new Error(`waitFor timed out: ${body.slice(0, 80)}`); await sleep(every); }
