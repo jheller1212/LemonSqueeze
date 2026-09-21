@@ -486,6 +486,7 @@ async function renderRunsPanel() {
   }
   renderRunsChips(runs);
   renderRunsList();
+  document.dispatchEvent(new CustomEvent("runs:changed")); // other panels (Design) list saved runs too
   setRunsOpen(runsUi.open);
   panel.classList.remove("hidden");
 }
