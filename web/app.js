@@ -225,6 +225,7 @@ async function nextQueuedRun(run) {
 }
 
 function scopeText(plan) {
+  if (plan.scope === "authors") return `${(plan.authorCount || 0).toLocaleString()} authors' posts`;
   if (plan.scope === "ids") return `${(plan.idCount || 0).toLocaleString()} posts by ID`;
   if (plan.scope === "count") return `${plan.limit.toLocaleString()} newest posts`;
   if (plan.segment) return plan.segment;
@@ -260,6 +261,7 @@ function buildManifest(run, st) {
     counts: { posts: st.total_posts, comments: st.total_comments, posts_with_incomplete_comments: incomplete.length, posts_reused_from_earlier_runs: st.reused, ...(run.plan.scope === "ids" ? { ids_requested: run.plan.idCount, ids_not_in_archive: (run.missingIds || []).length } : {}) },
     ids_not_in_archive: run.plan.scope === "ids" ? (run.missingIds || []) : undefined,
     design: run.design ? { ...run.design, annotations: undefined } : undefined,
+    author_panel: run.plan.scope === "authors" ? { authors: run.plan.authorCount, note: "User names are kept in the browser's run record only; they are not written to this report. Exports of this run are pseudonymised by default." } : undefined,
     comment_method: run.direct ? "browser → archive: windowed sweep of all comments in the subreddit (+30-day settle margin) grouped by post, then per-post walks for any post below 95% of Reddit's count; keyword and newest-N scopes use per-post walks" : "server batches: per-post walks",
     archive_requests_from_browser: run.direct ? Archive.stats.requests : 0,
     posts_with_incomplete_comments: incomplete,
@@ -1239,6 +1241,21 @@ document.getElementById("idsFile").addEventListener("change", async (e) => {
   refreshIdCount();
   e.target.value = "";
 });
+// Author panel: everything the listed accounts posted in one community. User names stay in this
+// browser (they are needed to query the archive); exports of such a run are pseudonymised by default.
+function startAuthorRun(subreddit, authors, { includeComments = false, design = null } = {}) {
+  const chunks = [];
+  for (let i = 0; i < authors.length; i += 25) chunks.push({ i: chunks.length, after: null, before: null, authors: authors.slice(i, i + 25), status: "pending", posts: 0 });
+  const run = {
+    id: RunStore.newId(), subreddit, status: "running", createdAt: Date.now(), updatedAt: Date.now(),
+    settings: { limit: MAX_POSTS_PER_SORT, includeComments, includeSelftext: true, skipNSFW: false, keywords: [] },
+    plan: { scope: "authors", window: null, limit: MAX_POSTS_PER_SORT, queue: [{ sort: "new", label: "By author", query: "" }], expectedPosts: null, expectedComments: null, authorCount: authors.length },
+    chunks, progress: { chunkIdx: 0, modeIdx: 0, after: null, modeFetched: 0, seq: 0 }, counts: { posts: 0, comments: 0 },
+  };
+  if (design) run.design = design;
+  return startScrape({ run });
+}
+
 // Start a run that fetches exactly these posts. `design` (optional) records where the
 // list came from: a sample or a matched design built in the Design panel.
 function startIdRun(ids, { includeComments = true, design = null } = {}) {
@@ -1288,6 +1305,7 @@ function exportBaseName(run) {
   let scope;
   if (plan.segment) scope = safeName(plan.segment.replace(/\s*→\s*/g, "_to_"));
   else if (plan.scope === "ids") scope = `ids-${plan.idCount || 0}`;
+  else if (plan.scope === "authors") scope = `authors-${plan.authorCount || 0}`;
   else if (plan.scope === "count" || !plan.window) scope = `newest-${plan.limit || run.settings?.limit || 0}`;
   else scope = `${isoDay(plan.window.after)}_to_${isoDay(plan.window.before)}`;
   const kws = run.settings?.keywords || [];
@@ -1422,6 +1440,10 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
   const postExtras = (ann) => (ann || analysis) ? (p) => ({ ...(ann ? ann[p.id] || {} : {}), ...(analysis ? { post_body_state: window.Design.bodyState(p.selftext) } : {}) }) : undefined;
   const commentExtras = analysis ? (c) => ({ comment_body_state: window.Design.bodyState(c.body) }) : undefined;
 
+  // Pseudonymise authors on the way out (never in the store): SHA-256 of salt + name, as in the CLI.
+  const pseudo = document.getElementById("pseudoToggle")?.checked && window.Pseudo ? window.Pseudo.createPseudonymiser(window.Pseudo.loadOrCreateSalt(localStorage).salt) : null;
+  const outPosts = async (batch) => { const posts = batch.map(stripStoreFields); return pseudo ? pseudo.apply(posts) : posts; };
+
   // Produce the file as a sequence of text pieces.
   async function produce(emit) {
     let n = 0;
@@ -1434,7 +1456,7 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
         const tag = merged ? { run_label: runLabel(r), run_id: r.id } : {};
         const ann = r.design?.annotations || null;
         await RunStore.iteratePosts(r.id, 500, async (batch) => {
-          for (const p of batch) { await emit((first ? "" : ",\n") + JSON.stringify({ ...stripStoreFields(p), ...tag, ...(ann ? ann[p.id] || {} : {}) }, null, 2)); first = false; }
+          for (const p of await outPosts(batch)) { await emit((first ? "" : ",\n") + JSON.stringify({ ...p, ...tag, ...(ann ? ann[p.id] || {} : {}) }, null, 2)); first = false; }
           n += batch.length;
           status(`Preparing download… ${where(k)}${n.toLocaleString()} posts`);
         });
@@ -1448,7 +1470,7 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
         const extra = merged ? { run_label: runLabel(r), run_id: r.id } : undefined;
         const ann = r.design?.annotations || null;
         await RunStore.iteratePosts(r.id, 500, async (batch) => {
-          const text = fn(batch.map(stripStoreFields), false, { header: first, subreddit: r.subreddit, extra, extraCols: designCols, extraFor: postExtras(ann), extraForComment: commentExtras });
+          const text = fn(await outPosts(batch), false, { header: first, subreddit: r.subreddit, extra, extraCols: designCols, extraFor: postExtras(ann), extraForComment: commentExtras });
           if (text) await emit(text + "\n"); // an empty batch must not leave a blank line
           first = false;
           n += batch.length;
@@ -1494,7 +1516,7 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
           throw err;
         }
         status(`Saved ${filename}.`);
-        RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "save-file dialog", runs: runs.length });
+        RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "save-file dialog", runs: runs.length, pseudonymised: !!pseudo });
         setTimeout(() => { if (subtitle.textContent === `Saved ${filename}.`) subtitle.textContent = previous; }, 6000);
         return;
       }
@@ -1511,7 +1533,7 @@ async function exportRuns(runs, kind, { gesture = false, gzip = false } = {}) {
       await produce((text) => { parts.push(text); });
     }
     downloadFile(parts, filename, mime);
-    RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "download", parts: parts.length, runs: runs.length });
+    RunLog.event("info", "export", { kind, filename, gzip: canGzip, via: "download", parts: parts.length, runs: runs.length, pseudonymised: !!pseudo });
   } catch (err) {
     RunLog.event("error", "export_error", { kind, filename, ...RunLog.errorInfo(err) });
     showError(`The download failed: ${err.message || err}. Your data is still saved in Your runs — try again, or use Posts CSV for a smaller file.`);
@@ -1712,7 +1734,7 @@ async function startScrape(opts = {}) {
   };
 
   const chunkLabel = (c) => run.chunks.length > 1
-    ? (c.ids ? `Batch ${c.i + 1}/${run.chunks.length} (${c.ids.length.toLocaleString()} IDs) · ` : `Chunk ${c.i + 1}/${run.chunks.length} (${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}) · `)
+    ? (c.authors ? `Batch ${c.i + 1}/${run.chunks.length} (${c.authors.length.toLocaleString()} authors) · ` : c.ids ? `Batch ${c.i + 1}/${run.chunks.length} (${c.ids.length.toLocaleString()} IDs) · ` : `Chunk ${c.i + 1}/${run.chunks.length} (${isoDay(c.after + 1)} → ${isoDay(c.before - 1)}) · `)
     : "";
 
   // Time left: from the measured pace of chunks finished in this session; before
@@ -1748,7 +1770,7 @@ async function startScrape(opts = {}) {
 
   // One chunk: every queue mode, paginated, from the saved cursor.
   const runChunk = async (c) => {
-    if (c.ids) throw new Error("Fetching by post ID needs the archive reachable from this browser; it is not right now. Resume later from Your runs.");
+    if (c.ids || c.authors) throw new Error("This kind of run needs the archive reachable from this browser; it is not right now. Resume later from Your runs.");
     const p = run.progress;
     for (let modeIdx = p.modeIdx; modeIdx < plan.queue.length; modeIdx++) {
       const mode = plan.queue[modeIdx];
@@ -1797,7 +1819,7 @@ async function startScrape(opts = {}) {
 
   // ---- Direct path: the browser pages the archive itself ----
   const signal = abortController.signal;
-  const sweepable = plan.scope !== "count" && plan.scope !== "ids" && !plan.queue.some((m) => m.query);
+  const sweepable = plan.scope !== "count" && plan.scope !== "ids" && plan.scope !== "authors" && !plan.queue.some((m) => m.query);
   const idSubs = new Set(allPosts.map((p) => p.subreddit).filter(Boolean));
   const nowTs = Math.floor(Date.now() / 1000);
   let reuse = new Map();
@@ -1937,9 +1959,42 @@ async function startScrape(opts = {}) {
     run.progress = { ...run.progress, modeIdx: plan.queue.length, after: null, modeFetched: 0 };
   };
 
+  // Stage 1 for an author panel: each author's posts in this community, oldest first
+  // (ascending paging is the shape the archive answers fastest for author queries).
+  const authorsStage1 = async (c) => {
+    const p = run.progress;
+    let done = c.i === p.chunkIdx ? (p.modeFetched || 0) : 0;
+    while (done < c.authors.length) {
+      const name = c.authors[done];
+      let after = null;
+      const fresh = [];
+      for (;;) {
+        const params = { author: name, subreddit, limit: 100, sort: "asc" };
+        if (after != null) params.after = after;
+        const raw = await Archive.get("posts/search", params, { signal });
+        for (const r of raw) {
+          if (!r || !r.id || seenIds.has(r.id)) continue;
+          const post = window.Mappers.mapPost(r);
+          if (skipNSFW && post.over_18) continue;
+          if (!includeSelftext) post.selftext = "";
+          seenIds.add(post.id); byId.set(post.id, post); allPosts.push(post); fresh.push(post); c.posts++;
+        }
+        if (raw.length < 100) break;
+        const last = raw[raw.length - 1].created_utc;
+        after = last - 1 === after ? last : last - 1; // re-cover the boundary second; ids dedupe
+      }
+      done++;
+      run.progress = { ...run.progress, chunkIdx: c.i, modeIdx: 0, after: null, modeFetched: done };
+      await persistPosts(fresh);
+      progressLine(c, plan.queue[0], ` · author ${done} of ${c.authors.length}`);
+    }
+    run.progress = { ...run.progress, modeIdx: plan.queue.length, after: null, modeFetched: 0 };
+  };
+
   const runChunkDirect = async (c) => {
     const p = run.progress;
-    if (c.ids) { await idsStage1(c); }
+    if (c.authors) { await authorsStage1(c); }
+    else if (c.ids) { await idsStage1(c); }
     else
     // Stage 1: posts, newest first, cursor persisted per page
     for (let modeIdx = p.modeIdx; modeIdx < plan.queue.length; modeIdx++) {
@@ -2005,7 +2060,8 @@ async function startScrape(opts = {}) {
 
     // Stage 2 (per-post path, keyword and newest-N scopes)
     const idSet = c.ids ? new Set(c.ids) : null;
-    const inChunk = (post) => idSet ? idSet.has(post.id) : (c.after == null || (post.created_utc > c.after && post.created_utc < c.before));
+    const authorSet = c.authors ? new Set(c.authors) : null;
+    const inChunk = (post) => authorSet ? authorSet.has(post.author) : idSet ? idSet.has(post.id) : (c.after == null || (post.created_utc > c.after && post.created_utc < c.before));
     const pending = allPosts.filter((post) => inChunk(post) && post.comments_complete !== true);
     for (const post of pending) if ((post.num_comments || 0) === 0) finishPost(post, post.comments || [], true);
     const topups = pending.filter((post) => post.comments_complete !== true);
@@ -2354,6 +2410,86 @@ function renderContentAvailability(desc) {
   box.classList.remove("hidden");
 }
 
+// Authors: concentration at a glance, pseudonymised exports, the authors table, and an author panel.
+function renderAuthors(desc, run) {
+  const box = document.getElementById("authorsBlock");
+  if (!desc || !desc.authors || !desc.authors.unique || !run) { box.classList.add("hidden"); return; }
+  const a = desc.authors;
+  document.getElementById("authorsSummary").innerHTML = `<strong>Authors: ${a.unique.toLocaleString()}${a.truncated ? "+" : ""} accounts</strong> · the 10 most active wrote ${pctText(a.top10_share)} of all posts and comments · the top 1% wrote ${pctText(a.top1pct_share)}`;
+  const panelOk = run.subreddit && !["by-id", "multiple-subreddits"].includes(run.subreddit);
+  document.getElementById("authorPanelRow").classList.toggle("hidden", !panelOk);
+  // an author panel is about individuals: its exports are pseudonymised unless the researcher decides otherwise
+  if (run.plan.scope === "authors") document.getElementById("pseudoToggle").checked = true;
+  updateSaltNote();
+  updatePanelCount();
+  box.dataset.runId = run.id;
+  box.classList.remove("hidden");
+}
+
+function updateSaltNote() {
+  const info = window.Pseudo.loadOrCreateSalt(localStorage);
+  document.getElementById("saltNote").textContent = info.persistent
+    ? "A secret salt in this browser makes the pseudonyms; the same salt gives the same pseudonym for the same account, here and in the command-line tool. Copy it somewhere safe and share it only with co-authors — without it, new data cannot be linked to old pseudonyms."
+    : "Browser storage is blocked, so the salt lasts only until this tab closes: pseudonyms will not match between sessions.";
+}
+
+// name → { posts, comments } for one run, read from the store
+async function authorTable(runId) {
+  const agg = window.RunStats.createRunStats();
+  await RunStore.iteratePosts(runId, 500, async (batch) => { for (const p of batch) agg.add(p); });
+  return agg.authorRows();
+}
+
+let panelAuthors = [];
+async function updatePanelCount() {
+  const id = document.getElementById("authorsBlock").dataset.runId || (scrapeResult && scrapeResult.run && scrapeResult.run.id);
+  const out = document.getElementById("authorPanelCount");
+  if (!id) return;
+  const min = Math.max(1, parseInt(document.getElementById("authorPanelMin").value, 10) || 1);
+  // the table is read from the store asynchronously: a slower, older call must not overwrite a newer one
+  const seq = (updatePanelCount.seq = (updatePanelCount.seq || 0) + 1);
+  document.getElementById("authorPanelBtn").disabled = true;
+  const table = await authorTable(id);
+  if (seq !== updatePanelCount.seq) return;
+  const rows = table.filter((r) => r.posts >= min).sort((x, y) => y.posts - x.posts);
+  panelAuthors = rows.slice(0, 2000).map((r) => r.name);
+  out.textContent = `${rows.length.toLocaleString()} account${rows.length === 1 ? "" : "s"}${rows.length > 2000 ? " (the 2,000 most active are used)" : ""}`;
+  document.getElementById("authorPanelBtn").disabled = panelAuthors.length === 0 || !!abortController;
+}
+
+document.getElementById("authorPanelMin").addEventListener("input", () => { clearTimeout(updatePanelCount.t); updatePanelCount.t = setTimeout(updatePanelCount, 400); });
+document.getElementById("authorPanelBtn").addEventListener("click", () => {
+  const run = scrapeResult && scrapeResult.run;
+  if (!run || !panelAuthors.length) return;
+  if (!confirm(`Collect every post these ${panelAuthors.length.toLocaleString()} accounts made in r/${run.subreddit}?\n\nThis builds a record of what individual people wrote. Check that your ethics approval covers account-level data. Exports will be pseudonymised by default.`)) return;
+  startAuthorRun(run.subreddit, panelAuthors.slice(), { includeComments: document.getElementById("authorPanelComments").checked,
+    design: { kind: "author_panel", source_run: run.id, min_posts: Math.max(1, parseInt(document.getElementById("authorPanelMin").value, 10) || 1), authors: panelAuthors.length } });
+});
+document.getElementById("authorsCsv").addEventListener("click", async () => {
+  const run = scrapeResult && scrapeResult.run;
+  if (!run) return;
+  const rows = (await authorTable(run.id)).sort((x, y) => (y.posts + y.comments) - (x.posts + x.comments));
+  const usePseudo = document.getElementById("pseudoToggle").checked;
+  let nameOf = (n) => n;
+  if (usePseudo) { const p = window.Pseudo.createPseudonymiser(window.Pseudo.loadOrCreateSalt(localStorage).salt); await p.learn(rows.map((r) => r.name)); nameOf = p.of; }
+  const total = rows.reduce((n, r) => n + r.posts + r.comments, 0) || 1;
+  const lines = [["author", "posts", "comments", "total", "share_of_all", "pseudonymised"].join(",")];
+  for (const r of rows) lines.push([nameOf(r.name), r.posts, r.comments, r.posts + r.comments, ((r.posts + r.comments) / total).toFixed(6), usePseudo ? "TRUE" : "FALSE"].map(csvEscape).join(","));
+  downloadFile(lines.join("\n") + "\n", `${exportBaseName(run)}_authors.csv`, "text/csv");
+});
+document.getElementById("saltCopy").addEventListener("click", async () => {
+  const salt = window.Pseudo.loadOrCreateSalt(localStorage).salt;
+  const out = document.getElementById("saltStatus");
+  try { await navigator.clipboard.writeText(salt); out.textContent = "Salt copied to the clipboard. Treat it like a password."; }
+  catch { out.textContent = "Clipboard blocked — use Import to type a salt you already have instead."; }
+});
+document.getElementById("saltImport").addEventListener("click", () => {
+  const v = prompt("Paste the salt (32–128 hexadecimal characters; the CLI keeps it in data/<study>/.salt). This replaces the salt in this browser.");
+  if (v === null) return;
+  const out = document.getElementById("saltStatus");
+  try { window.Pseudo.importSalt(localStorage, v); out.textContent = "Salt replaced. New downloads use it."; } catch (e) { out.textContent = e.message; }
+});
+
 function renderRunLog(run) {
   const box = document.getElementById("runLog");
   if (!run || !run.log || !run.log.length) { box.classList.add("hidden"); return; }
@@ -2435,6 +2571,7 @@ function showResults(data) {
   const run = data.run;
   renderRunLog(run);
   renderContentAvailability(data.stats ? data.stats.desc : null);
+  renderAuthors(data.stats ? data.stats.desc : null, run);
   if (run) {
     const failed = run.chunks.filter((c) => c.status === "failed");
     const chunksNote = run.chunks.length > 1 ? ` ${run.chunks.filter((c) => c.status === "done").length} of ${run.chunks.length} time chunks finished.` : "";

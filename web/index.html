@@ -386,6 +386,33 @@
           <div id="contentTable" class="design-table-wrap"></div>
         </details>
 
+        <details id="authorsBlock" class="content-availability hidden">
+          <summary id="authorsSummary"></summary>
+          <div class="authors-body">
+            <label class="toggle-switch export-gzip">
+              <input type="checkbox" id="pseudoToggle" />
+              <span class="toggle-slider"></span>
+              <span class="toggle-text">Pseudonymise authors in every download — post_author and comment_author become salted SHA-256 hashes; “[deleted]” and AutoModerator stay as they are. User names inside post or comment text are not touched.</span>
+            </label>
+            <p class="run-log-hint" id="saltNote"></p>
+            <div class="ids-row">
+              <button type="button" class="link-button" id="saltCopy">Copy salt</button>
+              <button type="button" class="link-button" id="saltImport">Import a salt</button>
+              <span id="saltStatus" class="design-dim" aria-live="polite"></span>
+            </div>
+            <div class="ids-row">
+              <button type="button" class="btn-download btn-download-small" id="authorsCsv" title="One row per account: posts, comments, total, share of all activity. Pseudonymised when the toggle above is on.">Download authors table (CSV)</button>
+            </div>
+            <div class="ids-row" id="authorPanelRow">
+              <span><strong>Author panel:</strong> collect every post by accounts with at least</span>
+              <input type="number" id="authorPanelMin" class="input-small" value="5" min="1" />
+              <span>posts in this run — <span id="authorPanelCount">…</span></span>
+              <label class="design-check"><input type="checkbox" id="authorPanelComments" /> with comment trees</label>
+              <button type="button" class="btn-scrape" id="authorPanelBtn" disabled><span class="btn-text">Collect</span></button>
+            </div>
+          </div>
+        </details>
+
         <p id="exportSizes" class="export-sizes"></p>
         <label class="toggle-switch export-gzip" title="Compress while downloading. R (read.csv / readr) and pandas open .csv.gz directly; Excel does not.">
           <input type="checkbox" id="gzipToggle" />
@@ -446,6 +473,7 @@
   <script type="module" src="mappers.js"></script>
   <script type="module" src="lib/design.js"></script>
   <script type="module" src="lib/runstats.js"></script>
+  <script type="module" src="lib/pseudo.js"></script>
   <script defer src="runs.js"></script>
   <script defer src="archive.js"></script>
   <script defer src="runlog.js"></script>
