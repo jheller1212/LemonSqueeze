@@ -25,7 +25,9 @@ async function refreshSources() {
     if (g.runs.length > 1) opts.push(`<option value="group:${escapeHtml(g.key)}">r/${escapeHtml(g.subreddit)} · ${g.batch ? "batch" : "all runs"} (${g.runs.length} runs) · ${posts.toLocaleString()} posts</option>`);
     for (const r of g.runs) opts.push(`<option value="run:${escapeHtml(r.id)}">${g.runs.length > 1 ? "  └ " : ""}r/${escapeHtml(r.subreddit)} · ${escapeHtml(scopeText(r.plan))} · ${(r.counts?.posts || 0).toLocaleString()} posts</option>`);
   }
+  const keep = sel.value; // refreshing must not throw away what the researcher had chosen
   sel.innerHTML = opts.join("");
+  if (keep && Array.from(sel.options).some((o) => o.value === keep)) sel.value = keep;
   state.groups = groups;
 }
 
@@ -342,7 +344,13 @@ function renderPreview() {
 }
 
 // ---------------------------------------------------------------- wiring
+// The list of saved runs must follow the store: a run that finishes while this panel is open has to appear
+// without closing and reopening it. app.js announces every change of the run list; touching the selector refreshes too.
 $("designBlock").addEventListener("toggle", () => { if ($("designBlock").open) refreshSources(); });
+document.addEventListener("runs:changed", () => { if ($("designBlock").open) refreshSources(); });
+$("designSource").addEventListener("pointerdown", refreshSources);
+$("designSource").addEventListener("focus", refreshSources);
+if ($("designBlock").open) refreshSources();
 $("designRun").addEventListener("click", runFilters);
 $("designPreviewFilter").addEventListener("change", renderPreview);
 $("designPreviewMore").addEventListener("click", renderPreview);
